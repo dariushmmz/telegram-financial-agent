@@ -1,219 +1,109 @@
 # Telegram Receipt & Financial Reconciliation Bot
 
-An AI-assisted Telegram bot for collecting Persian payment requests and receipt evidence, reviewing uncertain records, reconciling payments, and producing traceable accounting reports—without a separate web dashboard.
+This project helps Persian-speaking Telegram groups keep track of payment requests, receipt images, receipt text, and accounting reviews. Group members submit evidence in Telegram; managers and accountants review it and receive Persian reports without using a separate dashboard.
 
-> [!IMPORTANT]
-> A submitted receipt is evidence, not independent proof of bank settlement. The system keeps requested, submitted, confirmed, promised, and unresolved amounts separate and never turns an uncertain difference into a person's final debt.
+A receipt is treated as evidence, not proof that money reached a bank account. Requested amounts, submitted receipts, confirmed settlements, payment promises, and unresolved differences remain separate throughout the system.
 
-![Synthetic showcase of the receipt and report workflows](docs/assets/telegram-bot-showcase.png)
+[راهنمای فارسی مشتری (PDF)](docs/client-user-guide.fa.pdf)
 
-<sub>This is a fully synthetic product mockup, not a real customer conversation or live-test screenshot. It contains no real financial data.</sub>
+![Synthetic preview of the Telegram bot](docs/assets/telegram-bot-showcase.png)
 
-## What the system does
+<sub>The preview uses synthetic data. It is not a customer conversation or a production screenshot.</sub>
 
-For a group administrator or accountant, the workflow is simple:
-
-1. An environment-allowlisted Telegram username whose account is also a current group administrator activates the group with `/start`.
-2. A participant sends a bank screenshot, photographed receipt, handwritten form, or receipt text to that authorized Telegram group.
-3. The bot preserves the source message and sender, then extracts Persian financial fields with Gemini or an OpenRouter-compatible model.
-4. Deterministic Python validation normalizes Persian/English digits, checks identifiers and currency units, detects exact duplicates, and flags uncertainty.
-5. An authorized reviewer confirms, corrects, rejects, links, or marks the evidence as duplicate through inline buttons.
-6. `/reports` produces per-request and group totals while preserving a trace from every reported amount back to its source record.
-7. `/cleanup` can remove old image files after an administrator preview and confirmation; accounting records and audit history remain intact.
-
-The bot is designed for Persian-speaking financial groups and renders readable toman amounts while storing exact money values as integer rial.
-
-## Architecture
-
-The MVP is one lightweight Python service with explicit internal boundaries:
+## How it works
 
 ```mermaid
 flowchart LR
-    TG[Telegram group and private handoff] --> API[Telegram long polling]
-    API --> AUTH[Username allowlist, group authorization, and group isolation]
-    AUTH --> INTAKE[Message and receipt intake]
-    INTAKE --> FILES[(Managed receipt files)]
-    INTAKE --> QUEUE[Durable extraction jobs]
-    QUEUE --> AI{Provider adapter}
-    AI --> GEMINI[Google Gemini]
-    AI --> OPENROUTER[OpenRouter]
-    GEMINI --> VALIDATE[Deterministic validation]
-    OPENROUTER --> VALIDATE
-    VALIDATE --> LEDGER[Reconciliation ledger]
-    LEDGER --> REVIEW[Accountant review and corrections]
-    REVIEW --> REPORT[Deterministic reports]
-    AUTH --> REVIEW
-    AUTH --> REPORT
-    AUTH --> CLEANUP[Safe image cleanup]
-    CLEANUP --> FILES
-    INTAKE --> DB[(SQLite and audit history)]
-    LEDGER --> DB
-    REVIEW --> DB
-    REPORT --> DB
+    A[Receipt or payment request] --> B[Group access check]
+    B --> C[AI field extraction]
+    C --> D[Validation and duplicate check]
+    D --> E[(SQLite ledger and source history)]
+    E --> F[Accountant review]
+    F --> G[Persian financial report]
 ```
 
-```mermaid
-sequenceDiagram
-    participant U as Group participant
-    participant B as Telegram bot
-    participant A as AI extraction provider
-    participant R as Authorized reviewer
-    participant D as SQLite ledger
+Gemini or OpenRouter turns Persian receipt images and text into candidate fields. Python then validates those fields, prevents duplicate counting, records the source message, and calculates reports only from stored accounting records and reviewer decisions.
 
-    U->>B: Send receipt image or receipt text
-    B->>D: Store source reference and deduplication identity
-    B->>A: Send validated image/text input
-    A-->>B: Structured candidate fields
-    B->>D: Preserve raw attempt and normalized review state
-    B-->>R: Show pending evidence
-    R->>B: Confirm, correct, reject, link, or mark duplicate
-    B->>D: Append review, revision, and audit event
-    R->>B: /reports
-    B->>D: Calculate report from ledger records
-    B-->>R: Persian report with source traceability
-```
+## Telegram workflow
 
-### Main components
+An allowlisted Telegram username can activate a group with `/start` only while that account is a current administrator of the group. After activation, group members may submit financial messages and receipts. Reporting, verification, settings, and cleanup remain restricted to group administrators or authorized accounting reviewers.
 
-| Area | Responsibility |
-|---|---|
-| `telegram` | Long polling, commands, callback sessions, private handoffs, and server-side authorization |
-| `extraction` | Provider-neutral schema, Gemini/OpenRouter adapters, image preprocessing, text parsing, validation, and uncertainty |
-| `reconciliation` | Conservative matching, duplicate handling, allocations, reviews, corrections, and audit events |
-| `reporting` | Deterministic per-request and group calculations with Persian rendering and source manifests |
-| `persistence` | SQLAlchemy models, repositories, group isolation, and SQLite transactions |
-| `cleanup` | Previewed, admin-only deletion inside the managed receipt directory |
-| `operations` | Migrations, health checks, online backup, safe restore, and startup recovery |
+The bot accepts JPEG, PNG, and WebP receipt images as well as receipt text. It normalizes Persian and English digits, keeps rial and toman distinct, and marks unreadable or ambiguous fields for review.
 
-## Telegram commands
-
-Commands operate on the current group by default. Financial data is scoped by Telegram group ID, and sensitive actions are authorized again on the server even if a button is visible.
-
-| Command | Purpose | Access |
+| Command | What it does | Who can use it |
 |---|---|---|
-| `/start` | Activate the bot for a group or complete a private handoff | Allowlisted username belonging to a current group administrator |
-| `/help` | Show the Persian command guide | Group members |
-| `/reports` | Today's accounting report, with inline date/range navigation | Administrators and authorized accountants |
-| `/summary` | Requested, submitted, confirmed, promised, and unresolved totals | Administrators and authorized accountants |
-| `/receipts` | Browse receipt evidence, extracted fields, and processing state | Administrators and authorized accountants |
-| `/pending` | List records that require human review | Administrators and authorized accountants |
-| `/verify` | Confirm, correct, reject, link, split, or mark selected evidence as duplicate | Authorized reviewers |
-| `/transactions` | Browse requests, receipts, payments, allocations, and promises | Administrators and authorized accountants |
-| `/balance` | Show one person's documented position, separating confirmed and uncertain amounts | Administrators and authorized accountants |
-| `/request` | Reply to a participant's original message to create a traceable payment request | Administrators and authorized accountants |
-| `/promise` | Reply to a participant's original message to record a promise—not a payment | Administrators and authorized accountants |
-| `/settings` | Configure retention and accounting reviewers | Current group administrator |
-| `/cleanup` | Preview and confirm age-based receipt-image deletion | Current group administrator |
+| `/start` | Activates an approved group or completes a private handoff | Allowlisted current group administrator |
+| `/help` | Shows the Persian command guide | Members of an approved group |
+| `/request` | Records a payment request by replying to a person's message | Administrator or accounting reviewer |
+| `/promise` | Records a payment promise without counting it as payment | Administrator or accounting reviewer |
+| `/reports` | Shows today's report and date-range controls | Administrator or accounting reviewer |
+| `/summary` | Separates requested, submitted, confirmed, promised, and unresolved totals | Administrator or accounting reviewer |
+| `/receipts` | Browses receipt evidence and processing status | Administrator or accounting reviewer |
+| `/pending` | Lists items that need human review | Administrator or accounting reviewer |
+| `/verify` | Confirms, corrects, rejects, links, splits, or marks evidence as duplicate | Authorized reviewer |
+| `/transactions` | Browses requests, receipts, payments, allocations, and promises | Administrator or accounting reviewer |
+| `/balance` | Shows one person's documented position, with uncertain amounts separated | Administrator or accounting reviewer |
+| `/settings` | Manages reviewers and receipt-image retention | Current group administrator |
+| `/cleanup` | Previews and confirms deletion of eligible old image files | Current group administrator |
 
-Inline keyboards handle date selection, pagination, person/receipt selection, confirmation, correction, and navigation. Detail views can continue in a short-lived private session to keep sensitive fields out of the public group.
+Inline buttons handle dates, pagination, record selection, correction, and confirmation. Where private handoff is available, sensitive details can be opened in a direct conversation instead of the public group.
 
-The `پشتیبانی ربات` button appears in the start/main, help, settings, and access-denied views. It opens [@amixrmz](https://t.me/amixrmz), the bot's support contact and developer, and remains available to users who do not yet have access.
+The `پشتیبانی ربات` button opens [@amixrmz](https://t.me/amixrmz), the support contact and developer. It is also available on access-denied screens.
 
-### Example report contract
+## Financial rules
 
-```text
-گزارش حساب‌های امروز — مبالغ به تومان
+All totals are calculated with integer rial values in Python; the AI provider does not calculate balances or report totals.
 
-۱. کاربر نمونه: درخواست ۶۰۰٬۰۰۰٬۰۰۰؛ مبلغ فیش ۶۰۰٬۰۰۰٬۰۰۰؛
-   اختلاف صفر؛ وضعیت حسابداری: تکمیل.
+- Rial, toman, and unknown currency units are stored as different states.
+- A payment promise is not counted as a receipt or a completed payment.
+- A receipt is not counted twice when the same Telegram message, file, or file content is submitted again.
+- The system does not invent a match between a receipt and a payment request.
+- A difference on one request is not presented as a person's total debt.
+- Corrections add a new revision and audit event instead of erasing the original extraction.
+- Each report keeps the source records and Telegram message references behind its values.
+- Every database query and update is scoped to one Telegram group.
 
-۲. کاربر آزمایشی: درخواست ۱٬۱۰۰٬۰۰۰٬۰۰۰؛ مبلغ فیش ۱٬۰۹۳٬۹۰۰٬۰۰۰؛
-   اختلاف ۶٬۱۰۰٬۰۰۰؛ وضعیت: نیازمند بررسی.
+The `/cleanup` command removes only eligible image files inside the managed receipt directory. It requires an administrator preview and confirmation; extracted fields, transactions, associations, reports, and audit history stay in the database.
 
-جمع درخواست‌ها: ۱٬۷۰۰٬۰۰۰٬۰۰۰
-جمع مبالغ فیش‌ها: ۱٬۶۹۳٬۹۰۰٬۰۰۰
-اختلاف قابل بررسی: ۶٬۱۰۰٬۰۰۰
+## Run locally
 
-مبالغ فیش‌ها به معنی تأیید مستقل وصول بانکی نیستند.
-اختلاف‌ها نیز تا زمان بررسی حسابداری بدهی قطعی محسوب نمی‌شوند.
-```
-
-## Financial correctness and safety
-
-- All calculations use deterministic integer arithmetic; AI never calculates report totals.
-- Rial and toman are distinct units. Unknown or ambiguous units stay unresolved for review.
-- Requests, receipt evidence, externally confirmed settlement, and payment promises are different records.
-- A receipt is counted once through Telegram update/message/file/hash idempotency and database constraints.
-- Matching is conservative. Ambiguous associations are surfaced instead of invented.
-- A request-level difference is not presented as a person's overall debt.
-- Reviewer corrections append immutable revisions and audit events; the original extraction remains available.
-- Every report stores a source manifest and the Telegram message references behind its values.
-- Every query and mutation is group-scoped to prevent cross-group data leakage.
-
-## Technology choices
-
-- Python 3.12 or 3.13
-- SQLAlchemy 2 and Alembic migrations
-- SQLite in WAL mode for a single-process MVP
-- Pydantic settings and structured extraction schemas
-- Google Gemini through the official `google-genai` SDK
-- OpenRouter-compatible HTTP adapter using `httpx`
-- Telegram Bot API long polling without an additional bot framework
-- Pillow for bounded, validated JPEG/PNG/WebP preprocessing
-- Pytest with mocked provider and Telegram responses
-- Docker/Compose for a non-root, single-replica deployment
-
-## Repository layout
-
-```text
-.
-├── .github/workflows/ci.yml    # tests, security scan, and container build
-├── docs/                       # roadmap, milestone evidence, runbooks, assets
-├── migrations/                 # ordered Alembic database migrations
-├── scripts/                    # runtime, operations, smoke-test, and compatibility CLIs
-├── src/receipt_bot/
-│   ├── cleanup/                # safe receipt-image retention
-│   ├── domain/                 # money, time, enums, and text evidence
-│   ├── extraction/             # provider-neutral extraction pipeline
-│   ├── persistence/            # database models and repositories
-│   ├── reconciliation/         # matching and accounting state transitions
-│   ├── reporting/              # deterministic report engine and renderer
-│   └── telegram/               # API, polling, handlers, and workflows
-├── tests/                      # deterministic unit/integration tests and synthetic fixtures
-├── tools/                      # optional owner utilities, separate from the runtime
-├── .env.example                # configuration names only; never real secrets
-├── compose.yaml
-├── Dockerfile
-├── pyproject.toml
-└── requirements*.lock
-```
-
-Local `data/`, `backups/`, `debug/`, and `samples/` directories are intentionally ignored by Git. Treat every receipt—even a development fixture—as sensitive unless it is demonstrably synthetic.
-
-## Quick start on Windows PowerShell
-
-### 1. Create the environment
+The supported Python versions are 3.12 and 3.13. On Windows PowerShell:
 
 ```powershell
-python --version  # supported: 3.12 or 3.13
+git clone https://github.com/dariushmmz/telegram-financial-agent.git
+Set-Location telegram-financial-agent
+
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -r requirements-test.lock
-```
-
-### 2. Configure credentials
-
-```powershell
 Copy-Item .env.example .env
 ```
 
-Edit `.env` and set at least:
+Edit `.env` and provide your own credentials:
 
 ```dotenv
-TELEGRAM_BOT_TOKEN=replace-with-a-new-bot-token
-RECEIPT_BOT_ALLOWED_TELEGRAM_USERNAMES=@amixrmz
+TELEGRAM_BOT_TOKEN=replace-with-your-telegram-token
+RECEIPT_BOT_TELEGRAM_BOT_USERNAME=replace_with_your_bot_username
+RECEIPT_BOT_ALLOWED_TELEGRAM_USERNAMES=@trusted_admin
 RECEIPT_BOT_EXTRACTION_PROVIDER=gemini
-GEMINI_API_KEY=replace-with-a-google-ai-studio-key
+GEMINI_API_KEY=replace-with-your-google-ai-studio-key
 ```
 
-Use one or more trusted Telegram usernames separated by commas. A leading `@` is optional and matching is case-insensitive, so `@AmixRmz` is normalized to `amixrmz`. Only an allowlisted username whose account Telegram currently reports as a group administrator can activate that group. A missing, empty, malformed, or duplicate allowlist prevents startup.
+The username allowlist is comma-separated and case-insensitive. A leading `@` is optional. Configuration fails closed when the list is missing, empty, malformed, or contains duplicates.
 
-Telegram usernames can be changed and may later be reassigned, so they are weaker authorization identifiers than numeric Telegram User IDs. The bot stores the activating account's numeric ID for audit traceability, but the configured username remains the group-authorization anchor. If an administrator changes username, update the environment, restart, and run `/start` again in each approved group.
+For OpenRouter, set `RECEIPT_BOT_EXTRACTION_PROVIDER=openrouter` and provide `OPENROUTER_API_KEY`. Do not place real credentials in source files, screenshots, command arguments, or Git history.
 
-Use `OPENROUTER_API_KEY` and set `RECEIPT_BOT_EXTRACTION_PROVIDER=openrouter` only when choosing that provider. Never paste secrets into source files, command arguments, screenshots, issue reports, or Git history.
+Prepare the SQLite database and start long polling:
 
-If this machine needs the local SOCKS proxy:
+```powershell
+python scripts/manage_runtime.py prepare
+python scripts/run_bot.py
+```
+
+`prepare` creates managed storage directories, runs the Alembic database migrations, and checks the database and receipt-storage paths. Add the bot to the intended Telegram group, make the allowlisted account a group administrator, and send `/start` from that account.
+
+If the machine requires the local SOCKS proxy used during development:
 
 ```powershell
 $env:HTTP_PROXY  = 'socks5h://127.0.0.1:10808'
@@ -221,45 +111,13 @@ $env:HTTPS_PROXY = 'socks5h://127.0.0.1:10808'
 $env:ALL_PROXY   = 'socks5h://127.0.0.1:10808'
 ```
 
-### 3. Prepare and run
+## Storage
 
-```powershell
-python scripts/manage_runtime.py prepare
-python scripts/run_bot.py
-```
+The application uses SQLite, a database stored in one local file. The default path is `data/receipt_bot.db`; receipt image files are kept separately under `data/receipts/`.
 
-`prepare` creates the managed storage directories, upgrades the SQLite schema to the current Alembic revision, and verifies database integrity, foreign keys, schema revision, and storage access. The bot then runs as one long-polling process.
+The database stores Telegram source references, groups and users, role assignments, requests, image and text evidence, immutable extraction attempts, payments, allocations, reviews, corrections, audit events, report runs, and temporary interaction sessions.
 
-Before a real group test, configure BotFather privacy mode so the bot can receive receipt messages, and grant only the group permissions required by the workflows you intend to use.
-
-## Docker Compose deployment
-
-```powershell
-Copy-Item .env.example .env
-New-Item -ItemType Directory -Path backups -Force | Out-Null
-# Securely fill .env, then:
-docker compose up --build -d
-docker compose ps
-docker compose logs --tail 100 receipt-bot
-```
-
-The `receipt-data` volume holds `/app/data/receipt_bot.db` and managed receipt images. `./backups` is mounted separately. Run exactly one replica: multiple bot processes and shared/network SQLite storage are outside the supported MVP topology.
-
-Useful operations:
-
-```powershell
-docker compose exec receipt-bot python scripts/manage_runtime.py check
-docker compose exec receipt-bot python scripts/manage_runtime.py backup /app/backups/receipt-bot.db
-docker compose stop
-```
-
-Before production use, rehearse database backup and restore, verify the health check after upgrades, and monitor startup and polling logs without exposing financial data or credentials.
-
-## Database and stored data
-
-The local database is SQLite at `data/receipt_bot.db` by default. It stores Telegram source references, users/groups and roles, requests, image/text evidence, immutable extraction attempts, payments and allocations, reviews, corrections, audit events, report runs, and short-lived interaction sessions. Receipt image bytes live separately under `data/receipts/`.
-
-Read-only inspection examples for SQLite Expert or `sqlite3`:
+For read-only inspection in SQLite Expert or `sqlite3`:
 
 ```sql
 PRAGMA integrity_check;
@@ -277,58 +135,73 @@ LEFT JOIN payments AS p
   ON p.evidence_id = pe.id AND p.group_id = pe.group_id
 ORDER BY pe.id DESC
 LIMIT 50;
-
-SELECT id, group_id, decision, reviewer_user_id, comment, created_at
-FROM reviews
-ORDER BY id DESC
-LIMIT 50;
-
-SELECT id, group_id, action, actor_user_id, created_at
-FROM audit_events
-ORDER BY id DESC
-LIMIT 100;
 ```
 
-Stop the bot or use a read-only connection for manual inspection. Do not edit production rows with a database browser; accounting corrections belong in `/verify` so their audit history is preserved.
+Stop the bot or open the database in read-only mode before inspecting it. Accounting changes should go through `/verify` so the audit history is retained.
 
-## Development and validation
+## Run with Docker
+
+```powershell
+Copy-Item .env.example .env
+New-Item -ItemType Directory -Path backups -Force | Out-Null
+docker compose up --build -d
+docker compose ps
+docker compose logs --tail 100 receipt-bot
+```
+
+The Compose configuration runs one non-root bot process. Its named volume contains the SQLite database and managed receipt images; `./backups` is mounted separately.
+
+```powershell
+docker compose exec receipt-bot python scripts/manage_runtime.py check
+docker compose exec receipt-bot python scripts/manage_runtime.py backup /app/backups/receipt-bot.db
+docker compose stop
+```
+
+Run one replica only. Multiple bot processes and SQLite on shared network storage are not supported by this MVP.
+
+## Development and tests
 
 ```powershell
 $env:PYTEST_DISABLE_PLUGIN_AUTOLOAD = '1'
-python -m pytest -q
+python -m pytest
 python -m compileall -q src scripts tests
 python scripts/security_scan.py
 docker build --tag telegram-receipt-bot:local .
 ```
 
-Live provider calls are intentionally excluded from the automated suite because they spend credit and disclose receipt content to an external service. Run them only as an explicit opt-in check with synthetic or authorized media. The provider-neutral compatibility CLI is available as:
+Tests use mocked Telegram and AI responses and do not spend provider credit. Live provider checks are opt-in because they send data outside the machine; use only synthetic or explicitly authorized receipts.
 
-```powershell
-python scripts/extract_receipt.py --help
-```
+The code is split by responsibility:
 
-Contribution and synthetic-fixture rules are in [CONTRIBUTING.md](CONTRIBUTING.md). CI repeats compilation, the deterministic test suite, the secret scan, and a production container build without using credentials.
-
-## Deployment status and known limits
-
-All seven planned engineering milestones are implemented and covered by deterministic tests. Production acceptance remains conditional on the isolated real-Telegram checklist and human accounting review.
-
-- Existing databases created before the username-allowlist hardening require each intended group to be reactivated with `/start` by an allowlisted current administrator. No financial records are removed.
-- Rotate the development Telegram and Gemini credentials before any further staging; they were exposed by an earlier local Compose diagnostic.
-- Direct Gemini transport and structured response were smoke-tested with an authorized fixture; OpenRouter live transport remains pending until a key is available.
-- Handwriting extraction can be uncertain and is never guaranteed to be 100% accurate.
-- The bot does not independently query a bank or prove settlement.
-- Pre-bot Telegram history cannot be recovered automatically.
-- Horizontal scaling, WhatsApp, custom OCR training, external accounting systems, and a web dashboard are outside this MVP.
-- Provider usage and hosting are separate operating costs.
-
-Before production sign-off, complete an isolated real-Telegram staging test covering authorization, receipt intake, review, reports, cleanup preview, restart recovery, and backup restoration.
-
-## Documentation map
-
-| Document | Audience and purpose |
+| Package | Responsibility |
 |---|---|
-| [Persian client user guide (PDF)](docs/client-user-guide.fa.pdf) | Short, non-technical instructions for customers, including the separate Hamravesh deployment phase |
+| `telegram` | Telegram API calls, polling, commands, callbacks, and authorization |
+| `extraction` | Provider adapters, image checks, structured extraction, and validation |
+| `reconciliation` | Matching, allocation, reviews, corrections, and audit events |
+| `reporting` | Deterministic calculations and Persian report rendering |
+| `persistence` | SQLAlchemy models, repositories, and SQLite transactions |
+| `cleanup` | Safe receipt-image retention and deletion |
+
+Database schema changes are versioned under `migrations/`. Runtime and maintenance entry points live under `scripts/`, and deterministic tests are under `tests/`.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) before changing code or test data.
+
+## Current limits
+
+- The bot does not query a bank or independently confirm settlement.
+- Handwriting extraction is uncertain and always requires human review when fields are unclear.
+- Messages sent before the bot joined and activated in a group are not imported.
+- OpenRouter live transport still requires a valid key and a separate live check.
+- WhatsApp, custom OCR training, external accounting software, horizontal scaling, and a web dashboard are outside this MVP.
+- Hosting and AI API usage are operating costs separate from development.
+- Production sign-off still requires a real Telegram staging run, restart recovery check, and backup-restore rehearsal.
+
+The current deliverable is not presented as an already-running production service.
+
+## Client guide and support
+
+- [راهنمای فارسی مشتری (PDF)](docs/client-user-guide.fa.pdf)
+- [Telegram support: @amixrmz](https://t.me/amixrmz)
 
 ## License
 
