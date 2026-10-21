@@ -230,7 +230,7 @@ python scripts/run_bot.py
 
 `prepare` creates the managed storage directories, upgrades the SQLite schema to the current Alembic revision, and verifies database integrity, foreign keys, schema revision, and storage access. The bot then runs as one long-polling process.
 
-Before a real group test, configure BotFather privacy mode and group permissions using the [operations runbook](docs/OPERATIONS.md#2-telegram-and-botfather-setup).
+Before a real group test, configure BotFather privacy mode so the bot can receive receipt messages, and grant only the group permissions required by the workflows you intend to use.
 
 ## Docker Compose deployment
 
@@ -253,7 +253,7 @@ docker compose exec receipt-bot python scripts/manage_runtime.py backup /app/bac
 docker compose stop
 ```
 
-See [docs/OPERATIONS.md](docs/OPERATIONS.md) for Linux deployment, upgrades, backup/restore rehearsal, health checks, retention, monitoring, and incident response.
+Before production use, rehearse database backup and restore, verify the health check after upgrades, and monitor startup and polling logs without exposing financial data or credentials.
 
 ## Database and stored data
 
@@ -301,7 +301,7 @@ python scripts/security_scan.py
 docker build --tag telegram-receipt-bot:local .
 ```
 
-Live provider calls are intentionally excluded from the automated suite because they spend credit and disclose receipt content to an external service. Use only synthetic or explicitly authorized media and follow [docs/LIVE_EXTRACTION_TESTS.md](docs/LIVE_EXTRACTION_TESTS.md). The provider-neutral compatibility CLI is available as:
+Live provider calls are intentionally excluded from the automated suite because they spend credit and disclose receipt content to an external service. Run them only as an explicit opt-in check with synthetic or authorized media. The provider-neutral compatibility CLI is available as:
 
 ```powershell
 python scripts/extract_receipt.py --help
@@ -322,19 +322,13 @@ All seven planned engineering milestones are implemented and covered by determin
 - Horizontal scaling, WhatsApp, custom OCR training, external accounting systems, and a web dashboard are outside this MVP.
 - Provider usage and hosting are separate operating costs.
 
-Use [docs/STAGING_ACCEPTANCE.md](docs/STAGING_ACCEPTANCE.md) before production sign-off. The authoritative implementation history is [docs/PROJECT_PLAN.md](docs/PROJECT_PLAN.md), with a report for each completed step under `docs/STEP_00_REPORT.md` through `docs/STEP_07_REPORT.md`.
+Before production sign-off, complete an isolated real-Telegram staging test covering authorization, receipt intake, review, reports, cleanup preview, restart recovery, and backup restoration.
 
 ## Documentation map
 
 | Document | Audience and purpose |
 |---|---|
-| [Persian client user guide](docs/client-user-guide.fa.md) ([PDF](docs/client-user-guide.fa.pdf)) | Short, non-technical instructions for customers, including the separate Hamravesh deployment phase |
-| [Project plan](docs/PROJECT_PLAN.md) | Architecture, data model, seven-day milestones, acceptance criteria, and implementation status |
-| [Operations runbook](docs/OPERATIONS.md) | Deployment, BotFather configuration, health, backup/restore, retention, and incident handling |
-| [Staging acceptance](docs/STAGING_ACCEPTANCE.md) | Evidence-based real-Telegram test checklist |
-| [Live extraction tests](docs/LIVE_EXTRACTION_TESTS.md) | Safe opt-in Gemini/OpenRouter smoke-test procedure |
-| [Step 07 report](docs/STEP_07_REPORT.md) | Final engineering evidence, limitations, and production-signoff gaps |
-| [Access allowlist report](docs/ACCESS_ALLOWLIST_REPORT.md) | Post-MVP access hardening, support UI, tests, and rollout notes |
+| [Persian client user guide (PDF)](docs/client-user-guide.fa.pdf) | Short, non-technical instructions for customers, including the separate Hamravesh deployment phase |
 
 ## License
 

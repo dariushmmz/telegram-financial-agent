@@ -35,7 +35,7 @@ docker build --tag telegram-receipt-bot:local .
 - Prefer small synthetic fixtures under `tests/fixtures/`.
 - Keep local receipt images under the ignored `samples/` directory.
 - Do not use real names, cards, IBANs, references, or receipt images in tests or documentation.
-- Live AI and Telegram checks are opt-in and must follow [docs/LIVE_EXTRACTION_TESTS.md](docs/LIVE_EXTRACTION_TESTS.md) and [docs/STAGING_ACCEPTANCE.md](docs/STAGING_ACCEPTANCE.md).
+- Live AI and Telegram checks are opt-in. Use only synthetic or explicitly authorized data, verify authorization and group isolation, and complete them in a non-production group before sign-off.
 
 ## Pull-request checklist
 

@@ -35,6 +35,8 @@ docs/project-docs-writer/
 *.draft.md
 *.local.md
 *_NOTES.md
+/docs/*.md
+/docs/**/*.md
 .tmp-*/
 *.tmp
 *.bak
