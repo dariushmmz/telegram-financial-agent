@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=75,<82"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "telegram-receipt-reconciliation"
+version = "0.1.0"
+description = "Telegram receipt collection and deterministic financial reconciliation"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+  "alembic>=1.18.4,<2",
+  "google-genai>=1.54.0,<2",
+  "httpx[socks]>=0.28.1,<1",
+  "Pillow>=10.2.0,<13",
+  "pydantic>=2.12.5,<3",
+  "pydantic-settings>=2.10.1,<3",
+  "SQLAlchemy>=2.0.49,<2.1",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=9.1.1,<10"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-config --strict-markers"
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.coverage.run]
+branch = true
+source = ["receipt_bot"]

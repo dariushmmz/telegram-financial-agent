@@ -1,0 +1,34 @@
+services:
+  receipt-bot:
+    build: .
+    restart: unless-stopped
+    init: true
+    environment:
+      RECEIPT_BOT_DATABASE_URL: sqlite:////app/data/receipt_bot.db
+      RECEIPT_BOT_DATA_ROOT: /app/data
+      RECEIPT_BOT_LOG_LEVEL: ${RECEIPT_BOT_LOG_LEVEL:-INFO}
+      RECEIPT_BOT_RETENTION_DAYS: ${RECEIPT_BOT_RETENTION_DAYS:-183}
+      RECEIPT_BOT_TIMEZONE: ${RECEIPT_BOT_TIMEZONE:-Asia/Tehran}
+      RECEIPT_BOT_SENSITIVE_DEBUG: ${RECEIPT_BOT_SENSITIVE_DEBUG:-false}
+      RECEIPT_BOT_EXTRACTION_PROVIDER: ${RECEIPT_BOT_EXTRACTION_PROVIDER:-gemini}
+      RECEIPT_BOT_GEMINI_MODELS: ${RECEIPT_BOT_GEMINI_MODELS:-gemini-3.8-flash}
+      RECEIPT_BOT_OPENROUTER_MODEL: ${RECEIPT_BOT_OPENROUTER_MODEL:-google/gemini-3.8-flash}
+      RECEIPT_BOT_TELEGRAM_BOT_USERNAME: ${RECEIPT_BOT_TELEGRAM_BOT_USERNAME:-}
+      RECEIPT_BOT_TELEGRAM_POLL_TIMEOUT_SECONDS: ${RECEIPT_BOT_TELEGRAM_POLL_TIMEOUT_SECONDS:-30}
+      RECEIPT_BOT_INTERACTION_TTL_MINUTES: ${RECEIPT_BOT_INTERACTION_TTL_MINUTES:-15}
+      RECEIPT_BOT_SHUTDOWN_GRACE_SECONDS: ${RECEIPT_BOT_SHUTDOWN_GRACE_SECONDS:-30}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+    volumes:
+      - receipt-data:/app/data
+      - ./backups:/app/backups
+    stop_grace_period: 45s
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+volumes:
+  receipt-data:

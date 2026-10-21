@@ -1,0 +1,8 @@
+Single-database migration history for the Telegram receipt reconciliation service.
+
+Run from the project root:
+
+    alembic upgrade head
+    alembic downgrade base
+
+Set RECEIPT_BOT_DATABASE_URL to override the development URL in alembic.ini.

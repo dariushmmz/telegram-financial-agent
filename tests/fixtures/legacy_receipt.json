@@ -1,0 +1,14 @@
+{
+  "source_account": "6037-****-****-1234",
+  "source_name": "کاربر آزمایشی",
+  "destination_iban": "IR960120000000007769786056",
+  "destination_name": "دریافت‌کننده آزمایشی",
+  "purpose": "آزمون مهاجرت",
+  "amount_rial": 12345000,
+  "description": "داده کاملاً ساختگی برای آزمون خودکار",
+  "transaction_datetime": "1405/07/18 12:13:19",
+  "tracking_code": "14050718054200069446",
+  "transfer_status": "موفق",
+  "sender_note": null,
+  "has_not_final_payment_warning": false
+}
