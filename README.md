@@ -13,70 +13,22 @@ A receipt is treated as evidence, not proof that money reached a bank account. R
 ## How it works
 
 ```mermaid
-flowchart TD
-    A[Telegram image or receipt text] --> B{Approved group?}
-    B -- No --> B1[Reject input<br/>No AI call]
-    B -- Yes --> C[Store sender and source message]
-    C --> D[Create durable processing job]
-    D --> E[Validate input and compute fingerprints]
-    E --> F{Exact duplicate?}
-    F -- Yes --> F1[Link canonical evidence<br/>Do not count again]
-    F -- No --> G{Image similarity hit?}
-    G -- Yes --> G1[Flag possible duplicate]
-    G -- Text or no --> H[Provider adapter]
-    G1 --> H
-    H --> I[Gemini or OpenRouter]
-    I --> J{Valid structured response?}
-    J -- No --> J1[Record failure<br/>Retry only when safe]
-    J -- Yes --> K[Normalize and validate fields]
-    K --> L{Issues or uncertainty?}
-    L -- Yes --> M[Needs accountant review]
-    L -- No --> N[Submitted evidence]
-    F1 --> O[(SQLite ledger and audit history)]
-    M --> O
-    N --> O
-    O --> P[Deterministic match suggestion]
-    P --> Q{One clear request?}
-    Q -- Yes --> R[Suggest request link]
-    Q -- No --> S[Keep unlinked or ambiguous]
-    R --> T[Accountant confirms or corrects]
-    S --> T
-    T --> U[Deterministic Persian report]
+flowchart LR
+    A[Receipt image or text] --> B{Access and duplicate check}
+    B -- Blocked or duplicate --> X[No AI call or double count]
+    B -- Accepted --> C[AI extracts receipt fields]
+    C --> D[Python validates values]
+    D --> E{Uncertain?}
+    E -- Yes --> F[Accountant review]
+    E -- No --> G[(Accounting ledger)]
+    F --> G
+    R[Payment request] --> G
+    G --> H[Match and Persian report]
 ```
 
-The access check happens both when Telegram input arrives and when a queued or recovered job starts. An unauthorized group cannot reach the AI provider. Every accepted item keeps its group, sender, Telegram message reference, and processing state so a reported amount can be traced back to its source.
+Unauthorized groups stop before the provider call. Exact duplicates are linked to the original evidence and are not counted again. Gemini or OpenRouter extracts candidate fields such as amount, unit, date, and reference numbers; Python validates them and sends unclear values to an accountant.
 
-### AI extraction and data movement
-
-Images are downloaded into managed storage only after the group is accepted. The worker checks the decoded image type and size, computes a SHA-256 content hash, and creates a perceptual hash for similarity checks. Receipt text is first classified as a likely financial receipt and receives its own SHA-256 hash. These fingerprints are scoped to the current Telegram group.
-
-Unique inputs move through a provider-neutral adapter. The configured adapter sends the prepared image or receipt text to Gemini or OpenRouter and requires a structured response. The response can contain the document type, handwriting indicator, amount and unit, transaction date, bank references, source and destination identifiers, transfer status, and per-field confidence. Extra or malformed fields are rejected by the schema instead of being silently accepted.
-
-The provider response is still only an observation. Deterministic Python code then:
-
-- normalizes Persian and English digits;
-- parses the amount as a positive integer and converts to canonical rial only when the unit is known;
-- leaves rial-versus-toman ambiguity unresolved;
-- checks Iranian IBAN checksums, card-number shape, date and time ranges, and numeric transaction references;
-- treats critical fields marked likely, uncertain, or unreadable as requiring review.
-
-The database stores the original Telegram source, file metadata and fingerprints, provider/model identity, raw structured response, normalized candidate, validation issues, and uncertainty flags. Extraction attempts are append-only, so a later correction does not erase what the provider originally returned.
-
-### How the system treats each result
-
-| Condition | System decision | Effect on accounting |
-|---|---|---|
-| Group is inactive or no longer authorized | Reject the input or fail the recovered job before provider access | No AI request and no financial value created |
-| Same Telegram message, file identifier, image SHA-256, or text SHA-256 | Link the new evidence to the canonical record and mark it as an exact duplicate | Never count it as another payment; skip extraction when detected before the AI call |
-| Image has the same perceptual hash but different bytes | Mark it as a possible duplicate and continue extraction | Require human judgment; never declare it duplicate automatically |
-| Provider times out or returns an invalid response | Record the failed attempt and retry only errors classified as retryable | Do not invent or materialize financial fields |
-| Structured fields pass validation with no issues | Create a payment candidate in the submitted-evidence state | Available for reconciliation, but not treated as independently settled by the bank |
-| Amount, unit, identifier, date, or confidence is questionable | Create a payment candidate in the needs-review state | Keep uncertain values separate until an accountant decides |
-| One deterministic request candidate exists | Show a suggested association | A suggestion does not allocate money by itself |
-| Several requests match, or none match | Keep the payment ambiguous or unlinked | Exclude invented associations and show the item in review workflows |
-| Accountant confirms, corrects, rejects, links, or marks duplicate | Append a revision, review decision, and audit event | Recalculate reports from the resulting ledger state without changing the original extraction |
-
-Reports read the accounting ledger, not the AI response directly. Their totals come from integer arithmetic and reviewer-approved relationships; AI is used only to propose structured receipt fields.
+Only the accounting ledger drives matching and reports. AI does not calculate totals or confirm bank settlement, and the original Telegram source, extraction result, and reviewer decisions remain available for audit.
 
 ## Telegram workflow
 
