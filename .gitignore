@@ -19,6 +19,28 @@ venv/
 dist/
 build/
 
+# Local AI-agent instructions and tooling (not application source)
+AGENTS.md
+**/AGENTS.md
+CLAUDE.md
+**/CLAUDE.md
+GEMINI.md
+**/GEMINI.md
+.codex/
+.claude/
+.cursor/
+docs/project-docs-writer/
+
+# Local Markdown notes, drafts, and generated previews
+*.draft.md
+*.local.md
+*_NOTES.md
+.tmp-*/
+*.tmp
+*.bak
+*.swp
+*~
+
 # Runtime data (financial data must never be committed)
 data/
 *.db

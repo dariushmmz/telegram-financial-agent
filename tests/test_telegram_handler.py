@@ -5,6 +5,7 @@ from datetime import timedelta
 from urllib.parse import parse_qs, urlparse
 
 from sqlalchemy import func, select
+from telegram_fakes import TEST_ACCESS_POLICY, FakeTelegramGateway
 
 from receipt_bot.domain.time import utc_now
 from receipt_bot.persistence.models import (
@@ -18,11 +19,15 @@ from receipt_bot.persistence.models import (
 )
 from receipt_bot.telegram import texts
 from receipt_bot.telegram.handler import TelegramUpdateHandler
-from telegram_fakes import FakeTelegramGateway
 
 
-def user(user_id: int, name: str = "کاربر") -> dict:
-    return {"id": user_id, "is_bot": False, "first_name": name}
+def user(user_id: int, name: str = "کاربر", username: str | None = None) -> dict:
+    return {
+        "id": user_id,
+        "is_bot": False,
+        "first_name": name,
+        "username": username or f"user_{user_id}",
+    }
 
 
 def group_message(
@@ -93,7 +98,9 @@ def find_button(markup: dict, label: str) -> dict:
 
 def test_group_activation_and_update_message_idempotency(migrated_database) -> None:
     gateway = FakeTelegramGateway()
-    handler = TelegramUpdateHandler(migrated_database, gateway)
+    handler = TelegramUpdateHandler(
+        migrated_database, gateway, access_policy=TEST_ACCESS_POLICY
+    )
     update = activate(handler, gateway)
     assert asyncio.run(handler.handle(update)) is False
     assert gateway.sent[0]["text"] == texts.START_ACTIVATED
@@ -107,22 +114,26 @@ def test_group_activation_and_update_message_idempotency(migrated_database) -> N
 
 def test_non_admin_cannot_activate_or_open_settings(migrated_database) -> None:
     gateway = FakeTelegramGateway()
-    handler = TelegramUpdateHandler(migrated_database, gateway)
-    gateway.set_member(-1101, 11, "member")
-    start = group_message(1, 1, chat_id=-1101, actor=user(11), text="/start")
+    handler = TelegramUpdateHandler(
+        migrated_database, gateway, access_policy=TEST_ACCESS_POLICY
+    )
+    gateway.set_member(-1101, 7, "member")
+    start = group_message(1, 1, chat_id=-1101, actor=user(7), text="/start")
     asyncio.run(handler.handle(start))
     with migrated_database.session() as session:
-        assert session.scalar(select(TelegramGroup)).active is False
+        assert session.scalar(select(TelegramGroup)) is None
     assert gateway.sent[-1]["text"] == texts.START_ADMIN_REQUIRED
 
-    settings = group_message(2, 2, chat_id=-1101, actor=user(11), text="/settings")
+    settings = group_message(2, 2, chat_id=-1101, actor=user(7), text="/settings")
     asyncio.run(handler.handle(settings))
-    assert gateway.sent[-1]["text"] == texts.GROUP_INACTIVE
+    assert gateway.sent[-1]["text"] == texts.ACCESS_RESTRICTED
 
 
 def test_receipt_update_is_queued_once_and_groups_are_isolated(migrated_database) -> None:
     gateway = FakeTelegramGateway()
-    handler = TelegramUpdateHandler(migrated_database, gateway)
+    handler = TelegramUpdateHandler(
+        migrated_database, gateway, access_policy=TEST_ACCESS_POLICY
+    )
     activate(handler, gateway, chat_id=-1201, actor_id=1, update_id=1)
     activate(handler, gateway, chat_id=-1202, actor_id=2, update_id=2)
     photo = [
@@ -157,7 +168,12 @@ def test_receipt_update_is_queued_once_and_groups_are_isolated(migrated_database
 
 def test_settings_callback_rechecks_admin_and_rejects_forgery(migrated_database) -> None:
     gateway = FakeTelegramGateway()
-    handler = TelegramUpdateHandler(migrated_database, gateway, bot_username="receipt_test_bot")
+    handler = TelegramUpdateHandler(
+        migrated_database,
+        gateway,
+        access_policy=TEST_ACCESS_POLICY,
+        bot_username="receipt_test_bot",
+    )
     activate(handler, gateway, chat_id=-1301, actor_id=10)
     settings_update = group_message(2, 2, chat_id=-1301, actor=user(10, "مدیر"), text="/settings")
     asyncio.run(handler.handle(settings_update))
@@ -197,7 +213,9 @@ def test_settings_callback_rechecks_admin_and_rejects_forgery(migrated_database)
 
 def test_callback_cancel_back_and_expiry_paths(migrated_database) -> None:
     gateway = FakeTelegramGateway()
-    handler = TelegramUpdateHandler(migrated_database, gateway)
+    handler = TelegramUpdateHandler(
+        migrated_database, gateway, access_policy=TEST_ACCESS_POLICY
+    )
     activate(handler, gateway, chat_id=-1401, actor_id=10)
 
     asyncio.run(handler.handle(group_message(2, 2, chat_id=-1401, actor=user(10), text="/settings")))
@@ -225,7 +243,12 @@ def test_callback_cancel_back_and_expiry_paths(migrated_database) -> None:
 
 def test_reviewer_selection_and_private_handoff_are_bound_to_actor(migrated_database) -> None:
     gateway = FakeTelegramGateway()
-    handler = TelegramUpdateHandler(migrated_database, gateway, bot_username="receipt_test_bot")
+    handler = TelegramUpdateHandler(
+        migrated_database,
+        gateway,
+        access_policy=TEST_ACCESS_POLICY,
+        bot_username="receipt_test_bot",
+    )
     activate(handler, gateway, chat_id=-1501, actor_id=10)
     gateway.set_member(-1501, 30, "member", profile=user(30, "حسابدار"))
     asyncio.run(handler.handle(group_message(2, 2, chat_id=-1501, actor=user(10), text="/settings")))
@@ -265,7 +288,7 @@ def test_reviewer_selection_and_private_handoff_are_bound_to_actor(migrated_data
         },
     }
     asyncio.run(handler.handle(private_wrong))
-    assert gateway.sent[-1]["text"] == texts.PRIVATE_HANDOFF_INVALID
+    assert gateway.sent[-1]["text"] == texts.START_PRIVATE
 
     private_admin = {
         "update_id": 6,

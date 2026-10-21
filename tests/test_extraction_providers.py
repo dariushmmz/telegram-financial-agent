@@ -28,7 +28,10 @@ from receipt_bot.extraction.providers.gemini import (
     _gemini_response_schema,
     map_gemini_error,
 )
-from receipt_bot.extraction.providers.openrouter import OpenRouterProvider, map_openrouter_status
+from receipt_bot.extraction.providers.openrouter import (
+    OpenRouterProvider,
+    map_openrouter_status,
+)
 from receipt_bot.extraction.schema import ProviderReceipt
 
 
@@ -341,6 +344,7 @@ def test_provider_factory_requires_only_selected_provider_credentials(tmp_path) 
     base = {
         "database_url": f"sqlite:///{(tmp_path / 'db.sqlite').as_posix()}",
         "data_root": tmp_path / "data",
+        "allowed_telegram_usernames": "@operator_test",
     }
     with pytest.raises(ExtractionConfigurationError, match="GEMINI_API_KEY"):
         build_provider(AppSettings(**base, _env_file=None))

@@ -13,12 +13,13 @@ An AI-assisted Telegram bot for collecting Persian payment requests and receipt 
 
 For a group administrator or accountant, the workflow is simple:
 
-1. A participant sends a bank screenshot, photographed receipt, handwritten form, or receipt text to an authorized Telegram group.
-2. The bot preserves the source message and sender, then extracts Persian financial fields with Gemini or an OpenRouter-compatible model.
-3. Deterministic Python validation normalizes Persian/English digits, checks identifiers and currency units, detects exact duplicates, and flags uncertainty.
-4. An authorized reviewer confirms, corrects, rejects, links, or marks the evidence as duplicate through inline buttons.
-5. `/reports` produces per-request and group totals while preserving a trace from every reported amount back to its source record.
-6. `/cleanup` can remove old image files after an administrator preview and confirmation; accounting records and audit history remain intact.
+1. An environment-allowlisted Telegram username whose account is also a current group administrator activates the group with `/start`.
+2. A participant sends a bank screenshot, photographed receipt, handwritten form, or receipt text to that authorized Telegram group.
+3. The bot preserves the source message and sender, then extracts Persian financial fields with Gemini or an OpenRouter-compatible model.
+4. Deterministic Python validation normalizes Persian/English digits, checks identifiers and currency units, detects exact duplicates, and flags uncertainty.
+5. An authorized reviewer confirms, corrects, rejects, links, or marks the evidence as duplicate through inline buttons.
+6. `/reports` produces per-request and group totals while preserving a trace from every reported amount back to its source record.
+7. `/cleanup` can remove old image files after an administrator preview and confirmation; accounting records and audit history remain intact.
 
 The bot is designed for Persian-speaking financial groups and renders readable toman amounts while storing exact money values as integer rial.
 
@@ -29,7 +30,7 @@ The MVP is one lightweight Python service with explicit internal boundaries:
 ```mermaid
 flowchart LR
     TG[Telegram group and private handoff] --> API[Telegram long polling]
-    API --> AUTH[Authorization and group isolation]
+    API --> AUTH[Username allowlist, group authorization, and group isolation]
     AUTH --> INTAKE[Message and receipt intake]
     INTAKE --> FILES[(Managed receipt files)]
     INTAKE --> QUEUE[Durable extraction jobs]
@@ -90,7 +91,7 @@ Commands operate on the current group by default. Financial data is scoped by Te
 
 | Command | Purpose | Access |
 |---|---|---|
-| `/start` | Activate the bot for a group or complete a private handoff | Current group administrator |
+| `/start` | Activate the bot for a group or complete a private handoff | Allowlisted username belonging to a current group administrator |
 | `/help` | Show the Persian command guide | Group members |
 | `/reports` | Today's accounting report, with inline date/range navigation | Administrators and authorized accountants |
 | `/summary` | Requested, submitted, confirmed, promised, and unresolved totals | Administrators and authorized accountants |
@@ -105,6 +106,8 @@ Commands operate on the current group by default. Financial data is scoped by Te
 | `/cleanup` | Preview and confirm age-based receipt-image deletion | Current group administrator |
 
 Inline keyboards handle date selection, pagination, person/receipt selection, confirmation, correction, and navigation. Detail views can continue in a short-lived private session to keep sensitive fields out of the public group.
+
+The `پشتیبانی ربات` button appears in the start/main, help, settings, and access-denied views. It opens [@amixrmz](https://t.me/amixrmz), the bot's support contact and developer, and remains available to users who do not yet have access.
 
 ### Example report contract
 
@@ -199,9 +202,14 @@ Edit `.env` and set at least:
 
 ```dotenv
 TELEGRAM_BOT_TOKEN=replace-with-a-new-bot-token
+RECEIPT_BOT_ALLOWED_TELEGRAM_USERNAMES=@amixrmz
 RECEIPT_BOT_EXTRACTION_PROVIDER=gemini
 GEMINI_API_KEY=replace-with-a-google-ai-studio-key
 ```
+
+Use one or more trusted Telegram usernames separated by commas. A leading `@` is optional and matching is case-insensitive, so `@AmixRmz` is normalized to `amixrmz`. Only an allowlisted username whose account Telegram currently reports as a group administrator can activate that group. A missing, empty, malformed, or duplicate allowlist prevents startup.
+
+Telegram usernames can be changed and may later be reassigned, so they are weaker authorization identifiers than numeric Telegram User IDs. The bot stores the activating account's numeric ID for audit traceability, but the configured username remains the group-authorization anchor. If an administrator changes username, update the environment, restart, and run `/start` again in each approved group.
 
 Use `OPENROUTER_API_KEY` and set `RECEIPT_BOT_EXTRACTION_PROVIDER=openrouter` only when choosing that provider. Never paste secrets into source files, command arguments, screenshots, issue reports, or Git history.
 
@@ -305,6 +313,7 @@ Contribution and synthetic-fixture rules are in [CONTRIBUTING.md](CONTRIBUTING.m
 
 All seven planned engineering milestones are implemented and covered by deterministic tests. Production acceptance remains conditional on the isolated real-Telegram checklist and human accounting review.
 
+- Existing databases created before the username-allowlist hardening require each intended group to be reactivated with `/start` by an allowlisted current administrator. No financial records are removed.
 - Rotate the development Telegram and Gemini credentials before any further staging; they were exposed by an earlier local Compose diagnostic.
 - Direct Gemini transport and structured response were smoke-tested with an authorized fixture; OpenRouter live transport remains pending until a key is available.
 - Handwriting extraction can be uncertain and is never guaranteed to be 100% accurate.
@@ -319,11 +328,13 @@ Use [docs/STAGING_ACCEPTANCE.md](docs/STAGING_ACCEPTANCE.md) before production s
 
 | Document | Audience and purpose |
 |---|---|
+| [Persian client user guide](docs/client-user-guide.fa.md) ([PDF](docs/client-user-guide.fa.pdf)) | Short, non-technical instructions for customers, including the separate Hamravesh deployment phase |
 | [Project plan](docs/PROJECT_PLAN.md) | Architecture, data model, seven-day milestones, acceptance criteria, and implementation status |
 | [Operations runbook](docs/OPERATIONS.md) | Deployment, BotFather configuration, health, backup/restore, retention, and incident handling |
 | [Staging acceptance](docs/STAGING_ACCEPTANCE.md) | Evidence-based real-Telegram test checklist |
 | [Live extraction tests](docs/LIVE_EXTRACTION_TESTS.md) | Safe opt-in Gemini/OpenRouter smoke-test procedure |
 | [Step 07 report](docs/STEP_07_REPORT.md) | Final engineering evidence, limitations, and production-signoff gaps |
+| [Access allowlist report](docs/ACCESS_ALLOWLIST_REPORT.md) | Post-MVP access hardening, support UI, tests, and rollout notes |
 
 ## License
 

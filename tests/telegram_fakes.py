@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from receipt_bot.telegram.access import TelegramAccessPolicy
 from receipt_bot.telegram.api import TelegramAPIError
+
+TEST_ACCESS_POLICY = TelegramAccessPolicy(
+    frozenset({"user_1", "user_2", "user_7", "user_10"})
+)
 
 
 class FakeTelegramGateway:
@@ -13,6 +18,7 @@ class FakeTelegramGateway:
         self.answered_callbacks: list[dict[str, Any]] = []
         self.update_batches: list[list[dict[str, Any]]] = []
         self.member_checks: list[tuple[int, int]] = []
+        self.download_requests: list[str] = []
 
     async def get_me(self):
         return {"id": 999, "is_bot": True, "username": "test_receipt_bot"}
@@ -55,6 +61,7 @@ class FakeTelegramGateway:
         )
 
     async def download_file(self, file_id):
+        self.download_requests.append(file_id)
         event = self.downloads.get(file_id)
         if isinstance(event, list):
             event = event.pop(0)

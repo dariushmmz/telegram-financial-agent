@@ -6,7 +6,11 @@ from urllib.parse import quote
 
 from receipt_bot.domain.time import utc_now
 from receipt_bot.persistence.database import Database
-from receipt_bot.persistence.models import InteractionSession, TelegramGroup, TelegramUser
+from receipt_bot.persistence.models import (
+    InteractionSession,
+    TelegramGroup,
+    TelegramUser,
+)
 from receipt_bot.persistence.repositories import (
     GroupRepository,
     HistoryRepository,
@@ -14,6 +18,7 @@ from receipt_bot.persistence.repositories import (
     MembershipRepository,
     UserRepository,
 )
+from receipt_bot.telegram.access import TelegramAccessPolicy
 from receipt_bot.telegram.contracts import TelegramGateway
 
 
@@ -28,12 +33,27 @@ def telegram_display_name(user: dict[str, Any]) -> str:
 
 
 class AuthorizationService:
-    ADMIN_STATUSES = {"creator", "administrator"}
-    PRESENT_STATUSES = {"creator", "administrator", "member"}
+    ADMIN_STATUSES = frozenset({"creator", "administrator"})
+    PRESENT_STATUSES = frozenset({"creator", "administrator", "member"})
 
-    def __init__(self, database: Database, gateway: TelegramGateway) -> None:
+    def __init__(
+        self,
+        database: Database,
+        gateway: TelegramGateway,
+        access_policy: TelegramAccessPolicy,
+    ) -> None:
         self.database = database
         self.gateway = gateway
+        self.access_policy = access_policy
+
+    def require_allowlisted_user(self, telegram_username: str | None) -> None:
+        if not self.access_policy.allows_user(telegram_username):
+            raise AccessDenied("Telegram user is not allowlisted")
+
+    def require_authorized_group(self, group: TelegramGroup | None) -> TelegramGroup:
+        if not self.access_policy.authorizes_group(group):
+            raise AccessDenied("Telegram group is not authorized by the configured allowlist")
+        return group
 
     async def is_current_admin(self, telegram_chat_id: int, telegram_user_id: int) -> bool:
         member = await self.gateway.get_chat_member(telegram_chat_id, telegram_user_id)
@@ -46,6 +66,7 @@ class AuthorizationService:
     async def require_reviewer(
         self, group: TelegramGroup, user: TelegramUser
     ) -> None:
+        self.require_authorized_group(group)
         member = await self.gateway.get_chat_member(group.telegram_chat_id, user.telegram_user_id)
         status = member.get("status")
         if status in self.ADMIN_STATUSES:
@@ -66,16 +87,27 @@ class SettingsService:
         self.authorization = authorization
 
     async def activate_group(
-        self, *, telegram_chat_id: int, telegram_user_id: int
+        self,
+        *,
+        telegram_chat_id: int,
+        telegram_user_id: int,
+        telegram_username: str | None,
     ) -> tuple[TelegramGroup, bool]:
+        self.authorization.require_allowlisted_user(telegram_username)
         await self.authorization.require_admin(telegram_chat_id, telegram_user_id)
         with self.database.session() as session:
             group = GroupRepository(session).get_by_chat_id(telegram_chat_id)
             user = UserRepository(session).get_by_telegram_id(telegram_user_id)
             if group is None or user is None:
                 raise LookupError("group or user has not been observed")
-            changed = not group.active
+            changed = not self.authorization.access_policy.authorizes_group(group)
             if changed:
+                group.settings = self.authorization.access_policy.authorized_settings(
+                    group.settings,
+                    telegram_username or "",
+                    telegram_user_id,
+                )
+                group.settings_version += 1
                 GroupRepository(session).set_active(group, True)
                 HistoryRepository(session, group.id).append_audit(
                     action="group.activated",
@@ -102,6 +134,7 @@ class SettingsService:
             user = users.get_by_telegram_id(telegram_user_id)
             if group is None or user is None or not group.active:
                 raise LookupError("active group or actor does not exist")
+            self.authorization.require_authorized_group(group)
             before = group.retention_days
             if before != days:
                 group.retention_days = days
@@ -141,6 +174,7 @@ class SettingsService:
             actor = UserRepository(session).get_by_telegram_id(actor_telegram_user_id)
             if group is None or actor is None or not group.active:
                 raise LookupError("active group or actor does not exist")
+            self.authorization.require_authorized_group(group)
             target, _ = UserRepository(session).get_or_create(
                 target_telegram_user_id,
                 telegram_display_name(profile),

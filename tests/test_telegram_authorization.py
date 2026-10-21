@@ -5,9 +5,14 @@ from datetime import timedelta
 
 import pytest
 from sqlalchemy import select
+from telegram_fakes import TEST_ACCESS_POLICY, FakeTelegramGateway
 
 from receipt_bot.domain.time import utc_now
-from receipt_bot.persistence.models import AuditEvent, GroupMembership, InteractionSession
+from receipt_bot.persistence.models import (
+    AuditEvent,
+    GroupMembership,
+    InteractionSession,
+)
 from receipt_bot.persistence.repositories import GroupRepository, UserRepository
 from receipt_bot.telegram.services import (
     AccessDenied,
@@ -15,12 +20,12 @@ from receipt_bot.telegram.services import (
     InteractionService,
     SettingsService,
 )
-from telegram_fakes import FakeTelegramGateway
 
 
 def seed_group_and_users(database, chat_id=-1001):
     with database.session() as session:
         group = GroupRepository(session).add(chat_id, "گروه آزمون")
+        group.settings = TEST_ACCESS_POLICY.authorized_settings(group.settings, "user_10", 10)
         admin = UserRepository(session).add(10, "مدیر")
         reviewer = UserRepository(session).add(20, "حسابدار")
         outsider = UserRepository(session).add(30, "غریبه")
@@ -32,7 +37,7 @@ def test_current_admin_required_and_settings_changes_are_audited(migrated_databa
     gateway = FakeTelegramGateway()
     gateway.set_member(group.telegram_chat_id, admin.telegram_user_id, "administrator")
     gateway.set_member(group.telegram_chat_id, outsider.telegram_user_id, "member")
-    authorization = AuthorizationService(migrated_database, gateway)
+    authorization = AuthorizationService(migrated_database, gateway, TEST_ACCESS_POLICY)
     settings = SettingsService(migrated_database, authorization)
 
     updated = asyncio.run(
@@ -66,7 +71,7 @@ def test_accountant_grant_revoke_and_group_isolation(migrated_database) -> None:
     gateway.set_member(-2001, admin.telegram_user_id, "creator")
     gateway.set_member(-2001, reviewer.telegram_user_id, "member")
     gateway.set_member(-2002, reviewer.telegram_user_id, "member")
-    authorization = AuthorizationService(migrated_database, gateway)
+    authorization = AuthorizationService(migrated_database, gateway, TEST_ACCESS_POLICY)
     settings = SettingsService(migrated_database, authorization)
 
     asyncio.run(

@@ -34,6 +34,7 @@ def settings_for(tmp_path: Path) -> AppSettings:
         _env_file=None,
         database_url=sqlite_url(tmp_path / "live" / "receipt_bot.db"),
         data_root=tmp_path / "managed",
+        allowed_telegram_usernames="@operator_test",
         telegram_bot_token="test-token",
     )
 

@@ -14,10 +14,16 @@ Record:
 ## Onboarding and authorization
 
 - [ ] Bot privacy mode is disabled and the bot receives ordinary group messages.
-- [ ] A non-admin cannot activate the group.
-- [ ] A current group admin activates with `/start`.
+- [ ] Missing, empty, malformed, or case-duplicate `RECEIPT_BOT_ALLOWED_TELEGRAM_USERNAMES` prevents startup.
+- [ ] A non-allowlisted current admin cannot register or activate a group.
+- [ ] An allowlisted non-admin cannot register or activate a group.
+- [ ] An allowlisted current group admin activates with `/start`.
+- [ ] An ordinary member of the authorized group can submit a synthetic receipt.
+- [ ] An unapproved group cannot enqueue work or cause a provider call.
 - [ ] `/settings` adds an accountant; a normal member remains unauthorized.
 - [ ] Demoting/revoking a reviewer prevents the next sensitive callback server-side.
+- [ ] Removing the activating username from the runtime allowlist blocks existing commands, callbacks, receipt intake, recovered jobs, file downloads, and provider calls after restart.
+- [ ] Start/help/settings and access-denied views show `پشتیبانی ربات`, open `https://t.me/amixrmz`, and identify `@amixrmz` as support and developer.
 
 ## Request, promise, and receipt intake
 

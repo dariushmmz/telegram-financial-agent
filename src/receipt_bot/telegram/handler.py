@@ -8,7 +8,7 @@ from receipt_bot.cleanup import CleanupConflict, ReceiptCleanupService
 from receipt_bot.domain.text_evidence import is_text_receipt_candidate
 from receipt_bot.domain.time import to_tehran
 from receipt_bot.persistence.database import Database
-from receipt_bot.persistence.models import TelegramGroup, TelegramUser
+from receipt_bot.persistence.models import TelegramGroup, TelegramUpdate, TelegramUser
 from receipt_bot.persistence.repositories import (
     GroupRepository,
     MembershipRepository,
@@ -20,6 +20,7 @@ from receipt_bot.persistence.repositories import (
 )
 from receipt_bot.storage import ManagedStorage
 from receipt_bot.telegram import texts
+from receipt_bot.telegram.access import TelegramAccessPolicy
 from receipt_bot.telegram.api import TelegramAPIError
 from receipt_bot.telegram.contracts import TelegramGateway
 from receipt_bot.telegram.financial import (
@@ -76,6 +77,7 @@ class TelegramUpdateHandler:
         database: Database,
         gateway: TelegramGateway,
         *,
+        access_policy: TelegramAccessPolicy,
         bot_username: str | None = None,
         interaction_ttl_minutes: int = 15,
         storage: ManagedStorage | None = None,
@@ -83,7 +85,8 @@ class TelegramUpdateHandler:
         self.database = database
         self.gateway = gateway
         self.bot_username = bot_username
-        self.authorization = AuthorizationService(database, gateway)
+        self.access_policy = access_policy
+        self.authorization = AuthorizationService(database, gateway, access_policy)
         self.settings = SettingsService(database, self.authorization)
         self.interactions = InteractionService(
             database, ttl_minutes=interaction_ttl_minutes
@@ -99,18 +102,72 @@ class TelegramUpdateHandler:
         message = _message_from_update(update)
         chat = message.get("chat", {}) if message else {}
         is_group = chat.get("type") in {"group", "supergroup"}
+        is_private = chat.get("type") == "private"
         group: TelegramGroup | None = None
         user: TelegramUser | None = None
         actor = self._actor(update)
+        actor_id = actor.get("id")
+        actor_username = actor.get("username")
+        text = (message.get("text") or message.get("caption")) if message else None
+        command, argument = _command(text)
+
+        with self.database.session() as session:
+            if is_group and isinstance(chat.get("id"), int):
+                group = GroupRepository(session).get_by_chat_id(chat["id"])
+            if isinstance(actor_id, int):
+                user = UserRepository(session).get_by_telegram_id(actor_id)
+
+        if is_group:
+            chat_id = chat.get("id")
+            if not isinstance(chat_id, int) or not isinstance(actor_id, int):
+                self._complete_existing_update(update_id)
+                return False
+            if command == "/start":
+                if not self.access_policy.allows_user(actor_username):
+                    await self._send_access_restricted(chat_id)
+                    self._complete_existing_update(update_id)
+                    return False
+                if not await self.authorization.is_current_admin(chat_id, actor_id):
+                    await self.gateway.send_message(
+                        chat_id,
+                        texts.START_ADMIN_REQUIRED,
+                        reply_markup=texts.support_markup(),
+                    )
+                    self._complete_existing_update(update_id)
+                    return False
+            elif not self.access_policy.authorizes_group(group):
+                if command is not None or kind == "callback_query":
+                    await self._send_access_restricted(chat_id, callback=update.get("callback_query"))
+                self._complete_existing_update(update_id)
+                return False
+        elif is_private:
+            chat_id = chat.get("id")
+            if not isinstance(chat_id, int):
+                self._complete_existing_update(update_id)
+                return False
+            if command == "/start" and argument and user is not None:
+                pass
+            else:
+                response = texts.HELP_PRIVATE if command == "/help" else texts.START_PRIVATE
+                await self.gateway.send_message(
+                    chat_id,
+                    response,
+                    reply_markup=texts.support_markup(),
+                )
+                self._complete_existing_update(update_id)
+                return True
+        else:
+            self._complete_existing_update(update_id)
+            return False
 
         with self.database.session() as session:
             if is_group and isinstance(chat.get("id"), int):
                 group, _ = GroupRepository(session).get_or_create(
                     chat["id"], str(chat.get("title") or chat["id"]), active=False
                 )
-            if isinstance(actor.get("id"), int):
+            if isinstance(actor_id, int):
                 user, _ = UserRepository(session).get_or_create(
-                    actor["id"], telegram_display_name(actor), actor.get("username")
+                    actor_id, telegram_display_name(actor), actor.get("username")
                 )
                 if group is not None:
                     MembershipRepository(session, group.id).observe_member(user.id)
@@ -146,6 +203,26 @@ class TelegramUpdateHandler:
         with self.database.session() as session:
             TelegramUpdateRepository(session).complete(update_id)
         return True
+
+    def _complete_existing_update(self, update_id: int) -> None:
+        """Discard a previously persisted retry without registering rejected traffic."""
+        with self.database.session() as session:
+            if session.get(TelegramUpdate, update_id) is not None:
+                TelegramUpdateRepository(session).complete(update_id)
+
+    async def _send_access_restricted(
+        self,
+        chat_id: int,
+        *,
+        callback: dict[str, Any] | None = None,
+    ) -> None:
+        if isinstance(callback, dict) and isinstance(callback.get("id"), str):
+            await self.gateway.answer_callback_query(callback["id"])
+        await self.gateway.send_message(
+            chat_id,
+            texts.ACCESS_RESTRICTED,
+            reply_markup=texts.support_markup(),
+        )
 
     @staticmethod
     def _actor(update: dict[str, Any]) -> dict[str, Any]:
@@ -183,25 +260,40 @@ class TelegramUpdateHandler:
                 active_group, changed = await self.settings.activate_group(
                     telegram_chat_id=chat_id,
                     telegram_user_id=user.telegram_user_id,
+                    telegram_username=user.username,
                 )
             except AccessDenied:
-                await self.gateway.send_message(chat_id, texts.START_ADMIN_REQUIRED)
+                await self.gateway.send_message(
+                    chat_id,
+                    texts.ACCESS_RESTRICTED,
+                    reply_markup=texts.support_markup(),
+                )
                 return
             await self._store_message(message, update_id, active_group, user, edited)
             await self.gateway.send_message(
-                chat_id, texts.START_ACTIVATED if changed else texts.START_ALREADY_ACTIVE
+                chat_id,
+                texts.START_ACTIVATED if changed else texts.START_ALREADY_ACTIVE,
+                reply_markup=texts.support_markup(),
             )
             return
 
         if command == "/help":
             if group.active:
                 await self._store_message(message, update_id, group, user, edited)
-            await self.gateway.send_message(chat_id, texts.HELP_GROUP)
+            await self.gateway.send_message(
+                chat_id,
+                texts.HELP_GROUP,
+                reply_markup=texts.support_markup(),
+            )
             return
 
         if not group.active:
             if command is not None:
-                await self.gateway.send_message(chat_id, texts.GROUP_INACTIVE)
+                await self.gateway.send_message(
+                    chat_id,
+                    texts.GROUP_INACTIVE,
+                    reply_markup=texts.support_markup(),
+                )
             return
 
         stored, _ = await self._store_message(message, update_id, group, user, edited)
@@ -337,10 +429,18 @@ class TelegramUpdateHandler:
         argument: str | None,
     ) -> None:
         if command == "/help":
-            await self.gateway.send_message(chat_id, texts.HELP_PRIVATE)
+            await self.gateway.send_message(
+                chat_id,
+                texts.HELP_PRIVATE,
+                reply_markup=texts.support_markup(),
+            )
             return
         if command != "/start" or not argument:
-            await self.gateway.send_message(chat_id, texts.START_PRIVATE)
+            await self.gateway.send_message(
+                chat_id,
+                texts.START_PRIVATE,
+                reply_markup=texts.support_markup(),
+            )
             return
         interaction = self.interactions.resolve(argument, user_id=user.id)
         if interaction is None or interaction.workflow not in {
@@ -351,7 +451,7 @@ class TelegramUpdateHandler:
             return
         with self.database.session() as session:
             group = session.get(TelegramGroup, interaction.group_id)
-        if group is None:
+        if not self.access_policy.authorizes_group(group):
             await self.gateway.send_message(chat_id, texts.PRIVATE_HANDOFF_INVALID)
             return
         try:
@@ -904,6 +1004,7 @@ class TelegramUpdateHandler:
                 {"text": "بازگشت", "callback_data": callback(interaction.token, "back")},
                 {"text": "لغو", "callback_data": callback(interaction.token, "cancel")},
             ],
+            [texts.support_button()],
         ]
         if self.bot_username:
             handoff = self.interactions.create(
@@ -937,7 +1038,12 @@ class TelegramUpdateHandler:
         message = callback.get("message", {})
         chat = message.get("chat", {}) if isinstance(message, dict) else {}
         chat_id = chat.get("id")
-        if group is None or user is None or not isinstance(chat_id, int) or not group.active:
+        if (
+            group is None
+            or user is None
+            or not isinstance(chat_id, int)
+            or not self.access_policy.authorizes_group(group)
+        ):
             return
         data = callback.get("data")
         if not isinstance(data, str) or not data.startswith("i:"):

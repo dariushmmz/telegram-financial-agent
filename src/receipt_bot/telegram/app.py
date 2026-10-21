@@ -11,6 +11,7 @@ from receipt_bot.logging import configure_logging
 from receipt_bot.operations import prepare_runtime
 from receipt_bot.persistence.database import Database
 from receipt_bot.storage import ManagedStorage
+from receipt_bot.telegram.access import TelegramAccessPolicy
 from receipt_bot.telegram.api import TelegramAPIClient
 from receipt_bot.telegram.handler import TelegramUpdateHandler
 from receipt_bot.telegram.polling import PollingService
@@ -39,6 +40,7 @@ async def run_bot(settings: AppSettings, *, stop_event: asyncio.Event | None = N
     storage.ensure_exists()
     gateway = TelegramAPIClient(settings.telegram_bot_token)
     try:
+        access_policy = TelegramAccessPolicy(settings.telegram_username_allowlist)
         bot_username = settings.telegram_bot_username
         if not bot_username:
             identity = await gateway.get_me()
@@ -47,11 +49,18 @@ async def run_bot(settings: AppSettings, *, stop_event: asyncio.Event | None = N
         handler = TelegramUpdateHandler(
             database,
             gateway,
+            access_policy=access_policy,
             bot_username=bot_username,
             interaction_ttl_minutes=settings.interaction_ttl_minutes,
             storage=storage,
         )
-        worker = ReceiptJobWorker(database, gateway, storage, extraction)
+        worker = ReceiptJobWorker(
+            database,
+            gateway,
+            storage,
+            extraction,
+            access_policy=access_policy,
+        )
         service = PollingService(
             database,
             gateway,

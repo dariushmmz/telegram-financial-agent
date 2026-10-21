@@ -6,19 +6,25 @@ from datetime import timedelta
 
 from PIL import Image
 from sqlalchemy import func, select
+from telegram_fakes import TEST_ACCESS_POLICY, FakeTelegramGateway
+from test_telegram_handler import activate, group_message, user
 
+from receipt_bot.domain.time import utc_now
 from receipt_bot.extraction.errors import ProviderTimeoutError
 from receipt_bot.extraction.image import PreparedImage
 from receipt_bot.extraction.schema import ProviderReceipt, ProviderResult
 from receipt_bot.extraction.service import ExtractionService
-from receipt_bot.domain.time import utc_now
-from receipt_bot.persistence.models import ExtractionAttempt, Payment, ReceiptImage, ReceiptJob, TelegramGroup
+from receipt_bot.persistence.models import (
+    ExtractionAttempt,
+    Payment,
+    ReceiptImage,
+    ReceiptJob,
+    TelegramGroup,
+)
 from receipt_bot.storage import ManagedStorage
 from receipt_bot.telegram.api import TelegramAPIError
 from receipt_bot.telegram.handler import TelegramUpdateHandler
 from receipt_bot.telegram.worker import ReceiptJobWorker
-from telegram_fakes import FakeTelegramGateway
-from test_telegram_handler import activate, group_message, user
 
 
 class SequencedProvider:
@@ -78,13 +84,14 @@ def make_worker(database, gateway, tmp_path, provider, *, retry_delay_seconds=0)
         gateway,
         ManagedStorage(tmp_path / "receipts"),
         ExtractionService(provider),
+        access_policy=TEST_ACCESS_POLICY,
         retry_delay_seconds=retry_delay_seconds,
     )
 
 
 def test_download_and_extraction_are_separate_durable_stages(migrated_database, tmp_path) -> None:
     gateway = FakeTelegramGateway()
-    handler = TelegramUpdateHandler(migrated_database, gateway)
+    handler = TelegramUpdateHandler(migrated_database, gateway, access_policy=TEST_ACCESS_POLICY)
     activate(handler, gateway, chat_id=-2101, actor_id=1)
     gateway.downloads["file-a"] = image_bytes()
     enqueue_photo(
@@ -124,7 +131,7 @@ def test_download_and_extraction_are_separate_durable_stages(migrated_database, 
 
 def test_download_failure_retries_without_duplicate_records(migrated_database, tmp_path) -> None:
     gateway = FakeTelegramGateway()
-    handler = TelegramUpdateHandler(migrated_database, gateway)
+    handler = TelegramUpdateHandler(migrated_database, gateway, access_policy=TEST_ACCESS_POLICY)
     activate(handler, gateway, chat_id=-2201, actor_id=1)
     gateway.downloads["file-b"] = [
         TelegramAPIError("file_transport", retryable=True),
@@ -159,7 +166,7 @@ def test_download_failure_retries_without_duplicate_records(migrated_database, t
 
 def test_stale_download_claim_is_requeued_after_restart(migrated_database, tmp_path) -> None:
     gateway = FakeTelegramGateway()
-    handler = TelegramUpdateHandler(migrated_database, gateway)
+    handler = TelegramUpdateHandler(migrated_database, gateway, access_policy=TEST_ACCESS_POLICY)
     activate(handler, gateway, chat_id=-2251, actor_id=1)
     enqueue_photo(
         handler,
@@ -184,7 +191,7 @@ def test_stale_download_claim_is_requeued_after_restart(migrated_database, tmp_p
 
 def test_extraction_failure_appends_attempt_then_resumes(migrated_database, tmp_path) -> None:
     gateway = FakeTelegramGateway()
-    handler = TelegramUpdateHandler(migrated_database, gateway)
+    handler = TelegramUpdateHandler(migrated_database, gateway, access_policy=TEST_ACCESS_POLICY)
     activate(handler, gateway, chat_id=-2301, actor_id=1)
     gateway.downloads["file-c"] = image_bytes()
     enqueue_photo(
@@ -215,7 +222,7 @@ def test_extraction_failure_appends_attempt_then_resumes(migrated_database, tmp_
 
 def test_exact_and_file_identity_duplicates_do_not_reextract(migrated_database, tmp_path) -> None:
     gateway = FakeTelegramGateway()
-    handler = TelegramUpdateHandler(migrated_database, gateway)
+    handler = TelegramUpdateHandler(migrated_database, gateway, access_policy=TEST_ACCESS_POLICY)
     activate(handler, gateway, chat_id=-2401, actor_id=1)
     content = image_bytes()
     gateway.downloads.update({"file-1": content, "file-2": content, "file-3": content})
@@ -252,7 +259,7 @@ def test_visual_candidate_is_flagged_but_extracted_and_never_crosses_groups(
     second_bytes = image_bytes(compress_level=9)
     assert first_bytes != second_bytes
     gateway = FakeTelegramGateway()
-    handler = TelegramUpdateHandler(migrated_database, gateway)
+    handler = TelegramUpdateHandler(migrated_database, gateway, access_policy=TEST_ACCESS_POLICY)
     activate(handler, gateway, chat_id=-2501, actor_id=1, update_id=1)
     activate(handler, gateway, chat_id=-2502, actor_id=2, update_id=2)
     gateway.downloads.update({"a": first_bytes, "b": second_bytes, "c": second_bytes})

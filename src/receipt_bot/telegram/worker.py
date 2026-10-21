@@ -25,6 +25,7 @@ from receipt_bot.persistence.repositories import (
 )
 from receipt_bot.reconciliation.service import LedgerService
 from receipt_bot.storage import ManagedStorage
+from receipt_bot.telegram.access import TelegramAccessPolicy
 from receipt_bot.telegram.api import TelegramAPIError
 from receipt_bot.telegram.contracts import TelegramGateway
 
@@ -63,6 +64,7 @@ class ReceiptJobWorker:
         storage: ManagedStorage,
         extraction_service: ExtractionService,
         *,
+        access_policy: TelegramAccessPolicy,
         limits: ImageLimits | None = None,
         retry_delay_seconds: int = 30,
     ) -> None:
@@ -70,6 +72,7 @@ class ReceiptJobWorker:
         self.gateway = gateway
         self.storage = storage
         self.extraction_service = extraction_service
+        self.access_policy = access_policy
         self.limits = limits or ImageLimits()
         self.retry_delay_seconds = retry_delay_seconds
 
@@ -83,10 +86,11 @@ class ReceiptJobWorker:
 
     def materialize_extracted_payments(self) -> int:
         with self.database.session() as session:
-            group_ids = list(session.scalars(select(TelegramGroup.id).order_by(TelegramGroup.id)))
+            groups = list(session.scalars(select(TelegramGroup).order_by(TelegramGroup.id)))
             return sum(
-                LedgerService(session, group_id).materialize_unrecorded_extractions()
-                for group_id in group_ids
+                LedgerService(session, group.id).materialize_unrecorded_extractions()
+                for group in groups
+                if self.access_policy.authorizes_group(group)
             )
 
     async def run_once(self) -> bool:
@@ -97,23 +101,45 @@ class ReceiptJobWorker:
                 if text_job is None:
                     return False
                 text_job_id = text_job.id
+                text_job_group_id = text_job.group_id
                 job_id = None
             else:
                 text_job_id = None
+                text_job_group_id = None
                 job_id = job.id
+                job_group_id = job.group_id
                 stage = (
                     "download"
                     if job.status == ReceiptJobState.DOWNLOADING.value
                     else "extraction"
                 )
         if text_job_id is not None:
+            if not self._group_is_authorized(text_job_group_id):
+                self._fail_text_job(
+                    text_job_id,
+                    error_code="group_unauthorized",
+                    retryable=False,
+                )
+                return True
             await self._extract_text(text_job_id)
+            return True
+        if not self._group_is_authorized(job_group_id):
+            self._fail_job(
+                job_id,
+                stage=stage,
+                error_code="group_unauthorized",
+                retryable=False,
+            )
             return True
         if stage == "download":
             await self._download(job_id)
         else:
             await self._extract(job_id)
         return True
+
+    def _group_is_authorized(self, group_id: int) -> bool:
+        with self.database.session() as session:
+            return self.access_policy.authorizes_group(session.get(TelegramGroup, group_id))
 
     async def _download(self, job_id: int) -> None:
         with self.database.session() as session:

@@ -6,7 +6,7 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 from sqlalchemy import func, select
-from telegram_fakes import FakeTelegramGateway
+from telegram_fakes import TEST_ACCESS_POLICY, FakeTelegramGateway
 
 from receipt_bot.domain.enums import CurrencyUnit, PaymentEvidenceState
 from receipt_bot.domain.money import Money
@@ -34,7 +34,12 @@ from receipt_bot.telegram.handler import TelegramUpdateHandler
 
 
 def user(user_id: int, name: str = "کاربر") -> dict:
-    return {"id": user_id, "is_bot": False, "first_name": name}
+    return {
+        "id": user_id,
+        "is_bot": False,
+        "first_name": name,
+        "username": f"user_{user_id}",
+    }
 
 
 def group_message(
@@ -249,7 +254,7 @@ def complete_prompt(
 )
 def test_financial_commands_reject_unauthorized_members(migrated_database, command) -> None:
     gateway = FakeTelegramGateway()
-    handler = TelegramUpdateHandler(migrated_database, gateway)
+    handler = TelegramUpdateHandler(migrated_database, gateway, access_policy=TEST_ACCESS_POLICY)
     activate(handler, gateway, chat_id=-1005101)
     gateway.set_member(-1005101, 20, "member")
 
@@ -268,7 +273,10 @@ def test_financial_commands_reject_unauthorized_members(migrated_database, comma
 def test_reports_default_today_record_run_and_private_source_trace(migrated_database) -> None:
     gateway = FakeTelegramGateway()
     handler = TelegramUpdateHandler(
-        migrated_database, gateway, bot_username="receipt_test_bot"
+        migrated_database,
+        gateway,
+        access_policy=TEST_ACCESS_POLICY,
+        bot_username="receipt_test_bot",
     )
     chat_id = -1005201
     activate(handler, gateway, chat_id=chat_id)
@@ -306,7 +314,10 @@ def test_reports_default_today_record_run_and_private_source_trace(migrated_data
 def test_receipts_keep_sensitive_fields_private(migrated_database) -> None:
     gateway = FakeTelegramGateway()
     handler = TelegramUpdateHandler(
-        migrated_database, gateway, bot_username="receipt_test_bot"
+        migrated_database,
+        gateway,
+        access_policy=TEST_ACCESS_POLICY,
+        bot_username="receipt_test_bot",
     )
     chat_id = -1005301
     activate(handler, gateway, chat_id=chat_id)
@@ -327,7 +338,7 @@ def test_receipts_keep_sensitive_fields_private(migrated_database) -> None:
 
 def test_summary_transactions_and_balance_workflows(migrated_database) -> None:
     gateway = FakeTelegramGateway()
-    handler = TelegramUpdateHandler(migrated_database, gateway)
+    handler = TelegramUpdateHandler(migrated_database, gateway, access_policy=TEST_ACCESS_POLICY)
     chat_id = -1005401
     activate(handler, gateway, chat_id=chat_id)
     seed_finance(migrated_database, chat_id=chat_id)
@@ -352,7 +363,7 @@ def test_summary_transactions_and_balance_workflows(migrated_database) -> None:
 
 def test_verify_confirm_and_allocation_are_final_confirmed_and_idempotent(migrated_database) -> None:
     gateway = FakeTelegramGateway()
-    handler = TelegramUpdateHandler(migrated_database, gateway)
+    handler = TelegramUpdateHandler(migrated_database, gateway, access_policy=TEST_ACCESS_POLICY)
     chat_id = -1005501
     activate(handler, gateway, chat_id=chat_id)
     seed = seed_finance(migrated_database, chat_id=chat_id)
@@ -424,7 +435,7 @@ def test_verify_confirm_and_allocation_are_final_confirmed_and_idempotent(migrat
 
 def test_correction_preserves_original_revision(migrated_database) -> None:
     gateway = FakeTelegramGateway()
-    handler = TelegramUpdateHandler(migrated_database, gateway)
+    handler = TelegramUpdateHandler(migrated_database, gateway, access_policy=TEST_ACCESS_POLICY)
     chat_id = -1005601
     activate(handler, gateway, chat_id=chat_id)
     seed = seed_finance(migrated_database, chat_id=chat_id)
@@ -461,7 +472,7 @@ def test_correction_preserves_original_revision(migrated_database) -> None:
 
 def test_duplicate_workflow_requires_canonical_and_reason(migrated_database) -> None:
     gateway = FakeTelegramGateway()
-    handler = TelegramUpdateHandler(migrated_database, gateway)
+    handler = TelegramUpdateHandler(migrated_database, gateway, access_policy=TEST_ACCESS_POLICY)
     chat_id = -1005701
     activate(handler, gateway, chat_id=chat_id)
     seed = seed_finance(migrated_database, chat_id=chat_id, two_payments=True)
@@ -491,7 +502,7 @@ def test_duplicate_workflow_requires_canonical_and_reason(migrated_database) -> 
 
 def test_link_workflow_supports_split_allocations_without_overcounting(migrated_database) -> None:
     gateway = FakeTelegramGateway()
-    handler = TelegramUpdateHandler(migrated_database, gateway)
+    handler = TelegramUpdateHandler(migrated_database, gateway, access_policy=TEST_ACCESS_POLICY)
     chat_id = -1005801
     activate(handler, gateway, chat_id=chat_id)
     seed = seed_finance(migrated_database, chat_id=chat_id)
@@ -546,7 +557,7 @@ def test_link_workflow_supports_split_allocations_without_overcounting(migrated_
 
 def test_reauthorization_blocks_revoked_reviewer_before_final_action(migrated_database) -> None:
     gateway = FakeTelegramGateway()
-    handler = TelegramUpdateHandler(migrated_database, gateway)
+    handler = TelegramUpdateHandler(migrated_database, gateway, access_policy=TEST_ACCESS_POLICY)
     chat_id = -1005901
     activate(handler, gateway, chat_id=chat_id)
     seed = seed_finance(migrated_database, chat_id=chat_id)
@@ -577,7 +588,7 @@ def test_reauthorization_blocks_revoked_reviewer_before_final_action(migrated_da
 
 def test_active_accountant_can_use_every_financial_command(migrated_database) -> None:
     gateway = FakeTelegramGateway()
-    handler = TelegramUpdateHandler(migrated_database, gateway)
+    handler = TelegramUpdateHandler(migrated_database, gateway, access_policy=TEST_ACCESS_POLICY)
     chat_id = -1006001
     activate(handler, gateway, chat_id=chat_id)
     seed = seed_finance(migrated_database, chat_id=chat_id)
@@ -607,7 +618,7 @@ def test_active_accountant_can_use_every_financial_command(migrated_database) ->
 
 def test_reject_workflow_records_reason_and_removes_countability(migrated_database) -> None:
     gateway = FakeTelegramGateway()
-    handler = TelegramUpdateHandler(migrated_database, gateway)
+    handler = TelegramUpdateHandler(migrated_database, gateway, access_policy=TEST_ACCESS_POLICY)
     chat_id = -1006101
     activate(handler, gateway, chat_id=chat_id)
     seed = seed_finance(migrated_database, chat_id=chat_id)
@@ -637,7 +648,7 @@ def test_reject_workflow_records_reason_and_removes_countability(migrated_databa
 
 def test_receipt_pagination_and_financial_callback_actor_binding(migrated_database) -> None:
     gateway = FakeTelegramGateway()
-    handler = TelegramUpdateHandler(migrated_database, gateway)
+    handler = TelegramUpdateHandler(migrated_database, gateway, access_policy=TEST_ACCESS_POLICY)
     chat_id = -1006201
     activate(handler, gateway, chat_id=chat_id)
     seed = seed_finance(migrated_database, chat_id=chat_id)
@@ -674,7 +685,10 @@ def test_receipt_pagination_and_financial_callback_actor_binding(migrated_databa
 def test_transactions_show_active_associations_and_receipt_drilldown(migrated_database) -> None:
     gateway = FakeTelegramGateway()
     handler = TelegramUpdateHandler(
-        migrated_database, gateway, bot_username="receipt_test_bot"
+        migrated_database,
+        gateway,
+        access_policy=TEST_ACCESS_POLICY,
+        bot_username="receipt_test_bot",
     )
     chat_id = -1006301
     activate(handler, gateway, chat_id=chat_id)
@@ -701,7 +715,7 @@ def test_reply_workflows_capture_request_and_promise_without_counting_promise_as
     migrated_database,
 ) -> None:
     gateway = FakeTelegramGateway()
-    handler = TelegramUpdateHandler(migrated_database, gateway)
+    handler = TelegramUpdateHandler(migrated_database, gateway, access_policy=TEST_ACCESS_POLICY)
     chat_id = -1006401
     activate(handler, gateway, chat_id=chat_id)
 

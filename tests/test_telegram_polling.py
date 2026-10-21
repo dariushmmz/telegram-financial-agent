@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 
 from sqlalchemy import select
-from telegram_fakes import FakeTelegramGateway
+from telegram_fakes import TEST_ACCESS_POLICY, FakeTelegramGateway
 from test_telegram_handler import group_message, user
 
 from receipt_bot.persistence.models import TelegramUpdate
@@ -52,14 +52,17 @@ def test_polling_advances_offset_and_persists_update_before_acknowledgement(
                         50,
                         chat_id=-3101,
                         actor=user(7),
-                        text="/help",
+                        text="/start",
                     )
                 ]
             stop.set()
             return []
 
     gateway = ControlledGateway()
-    handler = TelegramUpdateHandler(migrated_database, gateway)
+    gateway.set_member(-3101, 7, "administrator")
+    handler = TelegramUpdateHandler(
+        migrated_database, gateway, access_policy=TEST_ACCESS_POLICY
+    )
     worker = IdleWorker()
     service = PollingService(
         migrated_database,
@@ -78,7 +81,7 @@ def test_polling_advances_offset_and_persists_update_before_acknowledgement(
         "allowed_updates": ["message", "edited_message", "callback_query"],
     }
     assert gateway.polls[1]["offset"] == 51
-    assert gateway.sent[-1]["text"] == texts.HELP_GROUP
+    assert gateway.sent[-1]["text"] == texts.START_ACTIVATED
     with migrated_database.session() as session:
         update = session.scalar(select(TelegramUpdate))
         assert update.update_id == 50
@@ -114,7 +117,9 @@ def test_graceful_shutdown_allows_inflight_worker_to_finish(migrated_database) -
 
     async def scenario() -> InflightWorker:
         gateway = WaitingGateway()
-        handler = TelegramUpdateHandler(migrated_database, gateway)
+        handler = TelegramUpdateHandler(
+            migrated_database, gateway, access_policy=TEST_ACCESS_POLICY
+        )
         worker = InflightWorker()
         service = PollingService(
             migrated_database,

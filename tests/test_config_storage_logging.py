@@ -15,11 +15,13 @@ from receipt_bot.storage import ManagedStorage, UnsafeStoragePath
 def test_configuration_requires_database_and_data_root(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("RECEIPT_BOT_DATABASE_URL", raising=False)
     monkeypatch.delenv("RECEIPT_BOT_DATA_ROOT", raising=False)
+    monkeypatch.delenv("RECEIPT_BOT_ALLOWED_TELEGRAM_USERNAMES", raising=False)
     with pytest.raises(ValidationError) as error:
         AppSettings(_env_file=None)
     message = str(error.value)
     assert "database_url" in message
     assert "data_root" in message
+    assert "allowed_telegram_usernames" in message
 
 
 def test_configuration_validates_and_masks_secrets(tmp_path: Path) -> None:
@@ -27,12 +29,34 @@ def test_configuration_validates_and_masks_secrets(tmp_path: Path) -> None:
     settings = AppSettings(
         database_url=f"sqlite:///{(tmp_path / 'app.db').as_posix()}",
         data_root=tmp_path / "managed",
+        allowed_telegram_usernames="@Primary_Admin, backup_admin",
         telegram_bot_token=secret,
     )
     assert settings.retention_days == 183
     assert settings.receipt_storage_root == (tmp_path / "managed" / "receipts").resolve()
+    assert settings.telegram_username_allowlist == frozenset(
+        {"primary_admin", "backup_admin"}
+    )
     assert secret not in repr(settings)
     assert "**********" in repr(settings)
+
+
+def test_configuration_loads_allowlist_from_prefixed_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv(
+        "RECEIPT_BOT_DATABASE_URL", f"sqlite:///{(tmp_path / 'app.db').as_posix()}"
+    )
+    monkeypatch.setenv("RECEIPT_BOT_DATA_ROOT", str(tmp_path / "managed"))
+    monkeypatch.setenv(
+        "RECEIPT_BOT_ALLOWED_TELEGRAM_USERNAMES", "@Primary_Admin,backup_admin"
+    )
+
+    settings = AppSettings(_env_file=None)
+
+    assert settings.telegram_username_allowlist == frozenset(
+        {"primary_admin", "backup_admin"}
+    )
 
 
 def test_configuration_rejects_unsupported_database_without_secret_leak(tmp_path: Path) -> None:
@@ -41,10 +65,40 @@ def test_configuration_rejects_unsupported_database_without_secret_leak(tmp_path
         AppSettings(
             database_url="postgresql://localhost/example",
             data_root=tmp_path / "managed",
+            allowed_telegram_usernames="@operator_test",
             telegram_bot_token=secret,
         )
     assert "supports sqlite" in str(error.value)
     assert secret not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        None,
+        "",
+        "   ",
+        "@",
+        "123user",
+        "bad-name",
+        "bad name",
+        "کاربر",
+        "@@admin",
+        "admin,ADMIN",
+        "a" * 33,
+    ],
+)
+def test_configuration_rejects_missing_empty_or_invalid_allowlist(
+    tmp_path: Path, value: object
+) -> None:
+    values = {
+        "database_url": f"sqlite:///{(tmp_path / 'app.db').as_posix()}",
+        "data_root": tmp_path / "managed",
+    }
+    if value is not None:
+        values["allowed_telegram_usernames"] = value
+    with pytest.raises(ValidationError, match="allowed_telegram_usernames"):
+        AppSettings(**values, _env_file=None)
 
 
 @pytest.mark.parametrize(

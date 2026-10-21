@@ -3,17 +3,22 @@ from __future__ import annotations
 import asyncio
 
 from sqlalchemy import func, select
+from telegram_fakes import TEST_ACCESS_POLICY, FakeTelegramGateway
+from test_telegram_handler import activate, group_message, user
 
 from receipt_bot.domain.enums import CurrencyUnit
-from receipt_bot.domain.text_evidence import is_text_receipt_candidate, text_evidence_sha256
+from receipt_bot.domain.text_evidence import (
+    is_text_receipt_candidate,
+    text_evidence_sha256,
+)
 from receipt_bot.extraction.image import PreparedImage
 from receipt_bot.extraction.schema import DocumentKind, ProviderReceipt, ProviderResult
 from receipt_bot.extraction.service import ExtractionService
 from receipt_bot.extraction.validation import normalize_receipt
 from receipt_bot.persistence.models import (
     ExtractionAttempt,
-    PaymentEvidence,
     Payment,
+    PaymentEvidence,
     ReceiptImage,
     TelegramGroup,
     TextReceiptJob,
@@ -21,9 +26,6 @@ from receipt_bot.persistence.models import (
 from receipt_bot.storage import ManagedStorage
 from receipt_bot.telegram.handler import TelegramUpdateHandler
 from receipt_bot.telegram.worker import ReceiptJobWorker
-from telegram_fakes import FakeTelegramGateway
-from test_telegram_handler import activate, group_message, user
-
 
 CARD_TEXT = """تراکنش موفق
 انتقال وجه کارت‌به‌کارت
@@ -137,7 +139,7 @@ def test_text_receipt_pipeline_persists_evidence_extracts_and_isolates_duplicate
     migrated_database, tmp_path
 ) -> None:
     gateway = FakeTelegramGateway()
-    handler = TelegramUpdateHandler(migrated_database, gateway)
+    handler = TelegramUpdateHandler(migrated_database, gateway, access_policy=TEST_ACCESS_POLICY)
     activate(handler, gateway, chat_id=-3101, actor_id=1, update_id=1)
     activate(handler, gateway, chat_id=-3102, actor_id=2, update_id=2)
 
@@ -161,6 +163,7 @@ def test_text_receipt_pipeline_persists_evidence_extracts_and_isolates_duplicate
         gateway,
         ManagedStorage(tmp_path / "receipts"),
         ExtractionService(provider),
+        access_policy=TEST_ACCESS_POLICY,
         retry_delay_seconds=0,
     )
     assert asyncio.run(worker.run_once()) is True

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Literal
 
@@ -33,10 +34,23 @@ class AppSettings(BaseSettings):
     telegram_poll_timeout_seconds: int = Field(default=30, ge=1, le=50)
     interaction_ttl_minutes: int = Field(default=15, ge=1, le=120)
     shutdown_grace_seconds: int = Field(default=30, ge=1, le=300)
+    allowed_telegram_usernames: str
 
     telegram_bot_token: SecretStr | None = Field(default=None, validation_alias="TELEGRAM_BOT_TOKEN")
     gemini_api_key: SecretStr | None = Field(default=None, validation_alias="GEMINI_API_KEY")
     openrouter_api_key: SecretStr | None = Field(default=None, validation_alias="OPENROUTER_API_KEY")
+
+    @field_validator("allowed_telegram_usernames", mode="before")
+    @classmethod
+    def validate_allowed_telegram_usernames(cls, value: object) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("Telegram username allowlist is required and cannot be empty")
+        usernames = [item.strip().removeprefix("@").casefold() for item in value.split(",")]
+        if any(not re.fullmatch(r"[a-z][a-z0-9_]{0,31}", item) for item in usernames):
+            raise ValueError("Telegram username allowlist must contain valid ASCII usernames")
+        if len(set(usernames)) != len(usernames):
+            raise ValueError("Telegram username allowlist contains duplicate usernames")
+        return ",".join(usernames)
 
     @field_validator("database_url")
     @classmethod
@@ -79,3 +93,7 @@ class AppSettings(BaseSettings):
         if not models:
             raise ValueError("at least one Gemini model must be configured")
         return models
+
+    @property
+    def telegram_username_allowlist(self) -> frozenset[str]:
+        return frozenset(self.allowed_telegram_usernames.split(","))

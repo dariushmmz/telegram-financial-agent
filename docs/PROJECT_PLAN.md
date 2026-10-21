@@ -28,6 +28,7 @@ This document is the authoritative implementation roadmap for the seven-day MVP.
 - [x] **Step 05 / Day 5 — Telegram reports, review, correction, and browsing workflows** (2026-10-21; corrective reason-input fix verified; 136 tests passed; all planned financial commands, private trace/detail handoffs, date navigation, pagination, and final-confirmed review/correction/link workflows implemented; see `docs/STEP_05_REPORT.md`)
 - [x] **Step 06 / Day 6 — Safe receipt image cleanup** (2026-10-21; 143 tests passed, including 7 cleanup-specific tests; admin-only preview and two-stage confirmation, managed-path protections, stale-preview detection, partial-failure recovery, and accounting-record preservation verified; see `docs/STEP_06_REPORT.md`)
 - [x] **Step 07 / Day 7 — Deployment, reliability hardening, and MVP acceptance** (2026-10-21; engineering implementation complete; 152 automated tests passed; Linux container build and disposable-volume fresh migration/health passed; validated SQLite backup/restore, graceful shutdown/recovery, credential redaction/scan, operations runbook, and reply-based `/request`/`/promise` capture implemented; direct Gemini smoke passed; isolated live Telegram staging and production sign-off remain explicitly pending; see `docs/STEP_07_REPORT.md`)
+- [x] **Post-MVP hardening — Telegram username allowlist and support access** (2026-10-21; changed from numeric IDs to normalized Telegram usernames at owner request; 170 automated tests passed; unauthorized/revoked groups cannot enqueue or consume provider work; username mutability risk documented; updated container build and isolated live Telegram staging remain pending; see `docs/ACCESS_ALLOWLIST_REPORT.md`)
 
 An unchecked milestone is not implemented, even if it is described here. A feature is verified only when its automated test or documented manual/live check has passed.
 
@@ -109,6 +110,7 @@ Do not rewrite the proven image routines unnecessarily. In Step 02, move and ada
 ### 2.3 Current implementation and remaining limitations
 
 - Steps 01–07 implement the Telegram intake, group isolation and authorization, image/text receipt extraction, deterministic reconciliation/reporting, accounting review/correction, safe image cleanup, durable recovery, and single-instance deployment architecture described by this plan.
+- Post-MVP access hardening adds a required environment allowlist of normalized Telegram usernames. Only an account whose username is allowlisted and which is also a current Telegram administrator may authorize a group. The stored username must remain in the runtime allowlist, so removal revokes all group processing—including recovered jobs—without deleting its financial data. The activating numeric ID is retained for audit, but usernames are mutable and therefore weaker authorization identifiers.
 - Step 07 adds explicit reply-based `/request` and `/promise` capture so authorized reviewers can create traceable ledger records from original participant messages. The same source message cannot be classified repeatedly as a request or promise, and a promise remains separate from payment totals.
 - Direct Gemini transport and structured extraction passed an opt-in live smoke test. The OpenRouter adapter is covered by deterministic mocked contract tests; its live smoke test remains pending because no OpenRouter credential is available.
 - The isolated end-to-end Telegram staging checklist remains pending. Automated handler tests do not verify BotFather privacy mode, real Telegram file delivery, production group permissions, or client approval of Persian accounting wording.
@@ -200,7 +202,7 @@ Exact column names will be established by migrations, but the following entities
 
 **telegram_users**
 
-- Internal ID, Telegram user ID (unique), latest display name/username, created/updated timestamps. Username is never an authorization key.
+- Internal ID, Telegram user ID (unique), latest display name/username, created/updated timestamps. The numeric ID remains the stable database identity; the operator-requested bootstrap allowlist uses normalized usernames with the documented mutability risk.
 
 **group_memberships**
 
@@ -352,7 +354,7 @@ Commands default to the current group. In private chat, the user selects only am
 
 | Command | Access | MVP behavior |
 |---|---|---|
-| `/start` | Any user; group-safe | Persian introduction, privacy expectations, private/group usage, and access initialization without granting a role. |
+| `/start` | Public support in private; allowlisted current admin for group activation | Shows Persian introduction/support. Group registration and activation occur only after both the environment allowlist and live Telegram administrator checks pass. |
 | `/help` | Any user; role-aware | Shows only useful workflows, but hiding an item is not authorization. Includes brief Persian examples. |
 | `/reports` | Group admin, accountant | Today's Tehran-date accounting report by default; inline previous/next day, custom range, refresh, details, and private export/navigation. Primary feature. |
 | `/receipts` | Group admin, accountant | Date selector, paginated receipts, extraction/storage/review status, safe group summary, private sensitive details. |
@@ -542,6 +544,7 @@ Each step report must list exact commands, pass/fail/skip counts, skipped reason
 ### Credentials/dependencies
 
 - Telegram bot token is required from Step 03 for staging/live operation; automated handler tests do not require it.
+- `RECEIPT_BOT_ALLOWED_TELEGRAM_USERNAMES` is mandatory and fail-closed. It accepts unique ASCII Telegram usernames, optionally prefixed with `@`, and compares them case-insensitively.
 - Direct Gemini key is required only for opt-in live extraction; deterministic implementation/tests mock the provider.
 - OpenRouter key is unavailable. Implement the adapter and mocked contract tests in Step 02; do not claim a live check.
 - Telegram bot must be added to each group with sufficient permissions and privacy mode configured to receive the intended financial messages. Exact least-privilege settings must be validated in staging.
@@ -556,6 +559,8 @@ Each step report must list exact commands, pass/fail/skip counts, skipped reason
 | False request association | Misstated person/request | Explicit reply/selection first, conservative candidates, review ambiguity, traceable unlink/correction. |
 | Receipt treated as settlement | False confirmation | Separate submitted/reviewed/external-settlement states and mandatory report disclaimer. |
 | Group/privacy leak | Severe confidentiality issue | Group-scoped repositories, server authorization on every action, private drill-down, isolation tests. |
+| Unauthorized provider consumption | Credential cost/data exposure | Required username bootstrap allowlist, live admin check at activation, persisted approved-group anchor, gates on commands/callbacks/intake/recovery/worker materialization, fail-closed configuration. |
+| Username change/reassignment | Authorization identity may become stale | Persist numeric ID for audit, require reactivation when configured username changes, document weaker guarantee and recommend immediate removal/restart on compromise. |
 | Debug/storage leak | Sensitive financial exposure | Debug off, redacted logs, managed storage, retention cleanup, secret/data scan. |
 | SQLite/concurrent workers | Locks or duplicate jobs | Single instance, WAL, short transactions, DB idempotency; defer horizontal scale/PostgreSQL. |
 | Provider/model churn | Extraction outage | Configured model IDs, provider interface, typed retry/fallback, pending queue, health/runbook. |
@@ -571,6 +576,7 @@ Each step report must list exact commands, pass/fail/skip counts, skipped reason
 5. **Deployment target (resolved in Step 07):** one Linux Docker Compose host, one bot replica, a persistent named data volume, and a separately mounted backup directory with encrypted off-host replication by the operator.
 6. **Legacy samples (deployment-safe, ownership decision pending):** `samples/` and `debug/` are excluded from container builds and source/runtime security scans. The owner must still confirm that they are synthetic/authorized before any source-control publication; otherwise remove them through an explicitly approved data-handling action.
 7. **Retention days:** default is 183 days as the practical six-month value. Confirm whether the client requires calendar-month cutoff instead.
+8. **Telegram bootstrap allowlist (revised at owner request):** a group remains authorized only while active and its recorded activating username remains in the environment allowlist. Removing that username revokes processing immediately after restart; a different allowlisted current administrator can reactivate the group without deleting its records. The stable numeric actor ID remains recorded for audit only.
 
 None of these decisions authorizes weaker isolation, invented values, double counting, or destructive deletion of accounting data.
 

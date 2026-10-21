@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from ledger_helpers import LedgerSeed
 from sqlalchemy import func, select
-from telegram_fakes import FakeTelegramGateway
+from telegram_fakes import TEST_ACCESS_POLICY, FakeTelegramGateway
 
 from receipt_bot.cleanup import CleanupConflict, ReceiptCleanupService
 from receipt_bot.domain.enums import CurrencyUnit
@@ -104,7 +104,12 @@ def group_message(update_id: int, *, chat_id: int, actor_id: int, text: str) -> 
             "message_id": update_id,
             "date": int(utc_now().timestamp()),
             "chat": {"id": chat_id, "type": "supergroup", "title": "گروه پاک‌سازی"},
-            "from": {"id": actor_id, "is_bot": False, "first_name": "کاربر"},
+            "from": {
+                "id": actor_id,
+                "is_bot": False,
+                "first_name": "کاربر",
+                "username": f"user_{actor_id}",
+            },
             "text": text,
         },
     }
@@ -115,7 +120,12 @@ def callback_update(update_id: int, *, chat_id: int, actor_id: int, data: str) -
         "update_id": update_id,
         "callback_query": {
             "id": f"cleanup-{update_id}",
-            "from": {"id": actor_id, "is_bot": False, "first_name": "کاربر"},
+            "from": {
+                "id": actor_id,
+                "is_bot": False,
+                "first_name": "کاربر",
+                "username": f"user_{actor_id}",
+            },
             "data": data,
             "message": {
                 "message_id": update_id + 10_000,
@@ -487,7 +497,12 @@ def test_cleanup_command_is_admin_only_and_requires_two_confirmations(
 ) -> None:
     storage = ManagedStorage(tmp_path / "receipts")
     gateway = FakeTelegramGateway()
-    handler = TelegramUpdateHandler(migrated_database, gateway, storage=storage)
+    handler = TelegramUpdateHandler(
+        migrated_database,
+        gateway,
+        access_policy=TEST_ACCESS_POLICY,
+        storage=storage,
+    )
     chat_id = -1007501
     admin_id = 10
     gateway.set_member(chat_id, admin_id, "administrator")
@@ -560,7 +575,12 @@ def test_cleanup_command_is_admin_only_and_requires_two_confirmations(
 def test_accountant_cannot_execute_cleanup_callback(migrated_database, tmp_path: Path) -> None:
     storage = ManagedStorage(tmp_path / "receipts")
     gateway = FakeTelegramGateway()
-    handler = TelegramUpdateHandler(migrated_database, gateway, storage=storage)
+    handler = TelegramUpdateHandler(
+        migrated_database,
+        gateway,
+        access_policy=TEST_ACCESS_POLICY,
+        storage=storage,
+    )
     chat_id = -1007601
     gateway.set_member(chat_id, 10, "administrator")
     asyncio.run(handler.handle(group_message(1, chat_id=chat_id, actor_id=10, text="/start")))

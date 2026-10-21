@@ -17,9 +17,12 @@ Keep the host, Docker data root, and backup destination encrypted and access-con
 1. Create the bot with BotFather and place the token only in `.env` as `TELEGRAM_BOT_TOKEN`.
 2. Use `/setprivacy` in BotFather and disable privacy mode. Otherwise Telegram will not deliver ordinary financial conversation messages to the bot.
 3. Add the bot to each intended group. Do not grant message deletion, user banning, ownership, or other unrelated permissions. Validate in staging that the bot can receive messages, send messages/buttons, download files, and inspect member/admin status.
-4. A current Telegram group administrator runs `/start` in the group. Server-side `getChatMember` authorization is performed; merely seeing a button does not grant access.
-5. The administrator uses `/settings` to add or revoke authorized accounting reviewers.
-6. Run `/help` and verify the Persian command list.
+4. Add the trusted administrator's Telegram username to `RECEIPT_BOT_ALLOWED_TELEGRAM_USERNAMES`, then restart the service. A leading `@` is optional and matching is case-insensitive.
+5. That same allowlisted account runs `/start` in the intended group while it is a current group administrator. The bot checks both conditions server-side, records the normalized username as the authorization anchor, and retains the numeric Telegram User ID for audit traceability.
+6. The administrator uses `/settings` to add or revoke authorized accounting reviewers.
+7. Run `/help` and verify the Persian command list and `پشتیبانی ربات` link to [@amixrmz](https://t.me/amixrmz), the support contact and developer.
+
+After activation, ordinary group members may submit financial messages and receipts. Reporting, review, settings, and cleanup retain their existing administrator/accountant checks. Removing the recorded username from the environment allowlist immediately blocks the group's commands, callbacks, intake, recovered updates, downloads, AI extraction, and materialization. To transfer authorization, add the new trusted username, remove the old username, restart, and have the new allowlisted current administrator run `/start`. Existing accounting data is preserved throughout.
 
 The bot cannot retrieve group history from before it joined. Reports cover only captured or deliberately imported records and must not be presented as complete for earlier periods.
 
@@ -30,10 +33,13 @@ Copy `.env.example` to `.env`. Never place credentials in `compose.yaml`, source
 Required:
 
 - `TELEGRAM_BOT_TOKEN`;
+- `RECEIPT_BOT_ALLOWED_TELEGRAM_USERNAMES`, a comma-separated list of Telegram usernames permitted to authorize groups; leading `@` is optional;
 - `GEMINI_API_KEY` when `RECEIPT_BOT_EXTRACTION_PROVIDER=gemini`;
 - `OPENROUTER_API_KEY` when `RECEIPT_BOT_EXTRACTION_PROVIDER=openrouter`.
 
-Provider selection and model IDs are configuration. Restart after a configuration change. Provider API consumption, Telegram-independent hosting, off-host backup storage, and network proxy costs are operating costs outside the development budget.
+The service fails closed if the allowlist is missing, empty, malformed, or contains duplicate usernames after case normalization. Existing active groups without the username authorization marker—such as groups created before this feature—remain blocked until an allowlisted current administrator reactivates them with `/start`. Provider selection and model IDs are configuration. Restart after a configuration change. Provider API consumption, Telegram-independent hosting, off-host backup storage, and network proxy costs are operating costs outside the development budget.
+
+Telegram usernames are mutable and can potentially be reassigned. This is weaker than numeric-ID authorization and cannot be fully mitigated by the Bot API. Confirm account ownership before allowlisting. When a trusted administrator changes username, replace the old username in the environment, restart, and reactivate every intended group with `/start`.
 
 If an outbound proxy is required, configure `HTTP_PROXY`, `HTTPS_PROXY`, and `ALL_PROXY` only in the protected runtime environment. Do not commit proxy credentials.
 
@@ -151,6 +157,7 @@ The repository's `samples/` and `debug/` directories are excluded from container
 
 - **Telegram token exposed:** revoke/regenerate with BotFather, update `.env`, restart, and review access/logs.
 - **Provider key exposed:** revoke at the provider, replace `.env`, restart, and review usage/costs.
+- **Allowlisted administrator compromised, renamed, or removed:** remove the username from the allowlist, restart immediately, review authorized groups and audit events, then reactivate only approved groups through a different allowlisted current administrator.
 - **Extraction outage:** keep queued jobs; verify provider/model/proxy; do not manually invent extracted values. Accountants may process pending items through review after evidence is available.
 - **Database health failure:** stop the bot, preserve all database/WAL/SHM files, copy logs, and restore into a separate location.
 - **Disk pressure:** create a validated backup, inspect volume use, then use `/cleanup`; never delete database rows or arbitrary receipt paths.
