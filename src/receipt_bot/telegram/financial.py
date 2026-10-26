@@ -208,6 +208,48 @@ class FinancialWorkflowService:
             raise LookupError("group does not exist")
         return group
 
+    @staticmethod
+    def _payment_identity(session, payment: Payment) -> tuple[Counterparty | None, TelegramUser | None]:
+        party = (
+            session.scalar(
+                select(Counterparty).where(
+                    Counterparty.id == payment.counterparty_id,
+                    Counterparty.group_id == payment.group_id,
+                )
+            )
+            if payment.counterparty_id is not None
+            else None
+        )
+        message = (
+            session.scalar(
+                select(TelegramMessage).where(
+                    TelegramMessage.id == payment.source_message_id,
+                    TelegramMessage.group_id == payment.group_id,
+                )
+            )
+            if payment.source_message_id is not None
+            else None
+        )
+        sender = (
+            session.get(TelegramUser, message.sender_user_id)
+            if message is not None and message.sender_user_id is not None
+            else None
+        )
+        return party, sender
+
+    @staticmethod
+    def _payment_identity_label(
+        party: Counterparty | None, sender: TelegramUser | None
+    ) -> str:
+        if party is not None:
+            return f"پرداخت‌کننده {party.display_name}"
+        if sender is not None:
+            return (
+                f"فرستنده تلگرام {sender.display_name}؛ "
+                "پرداخت‌کننده تعیین‌نشده"
+            )
+        return "پرداخت‌کننده تعیین‌نشده"
+
     def report(self, group_id: int, user_id: int, period: Period) -> str:
         start, end = period.utc_bounds
         with self.database.session() as session:
@@ -231,8 +273,9 @@ class FinancialWorkflowService:
             f"خلاصه مالی — {label}",
             f"درخواست قابل مقایسه: {toman(totals.requested_rial)}",
             f"رسید ثبت‌شده: {toman(totals.submitted_rial)}",
-            f"تأیید حسابداری: {toman(totals.confirmed_rial)}",
-            f"تأییدنشده: {toman(totals.unverified_rial)}",
+            f"رسید تأیید حسابداری‌شده: {toman(totals.evidence_confirmed_rial)}",
+            f"تخصیص تأییدشده به درخواست: {toman(totals.confirmed_rial)}",
+            f"تأییدنشده از نظر اتصال/تخصیص: {toman(totals.unverified_rial)}",
             f"اختلاف قابل مقایسه: {toman(totals.documented_difference_rial)}",
             f"وعده پرداخت (خارج از پرداخت‌ها): {toman(totals.promised_rial)}",
             f"موارد حل‌نشده/مستثنا: {totals.unresolved_count}",
@@ -304,6 +347,7 @@ class FinancialWorkflowService:
             ids: list[int] = []
             for payment in rows:
                 ids.append(payment.id)
+                party, sender = self._payment_identity(session, payment)
                 evidence = session.get(PaymentEvidence, payment.evidence_id) if payment.evidence_id else None
                 attempt = self._latest_attempt(session, evidence.id) if evidence else None
                 receipt = session.get(ReceiptImage, payment.receipt_id) if payment.receipt_id else None
@@ -316,6 +360,7 @@ class FinancialWorkflowService:
                 )
                 lines.append(
                     f"• رسید #{payment.id} ({kind}): {toman(payment.amount_rial)}؛ "
+                    f"{self._payment_identity_label(party, sender)}؛ "
                     f"وضعیت {_PAYMENT_STATES.get(payment.evidence_state, payment.evidence_state)}؛ "
                     f"پردازش {processing}؛ تصویر {storage}."
                 )
@@ -421,6 +466,7 @@ class FinancialWorkflowService:
                     Payment.created_at < end,
                 )
             ):
+                party, sender = self._payment_identity(session, payment)
                 linked = list(
                     session.scalars(
                         select(RequestPaymentAllocation.request_id).where(
@@ -442,7 +488,9 @@ class FinancialWorkflowService:
                         "payment",
                         (
                             f"رسید #{payment.id} — {toman(payment.amount_rial)} — "
-                            f"{payment.evidence_state}{link_text}"
+                            f"{self._payment_identity_label(party, sender)} — "
+                            f"{_PAYMENT_STATES.get(payment.evidence_state, payment.evidence_state)}"
+                            f"{link_text}"
                         ),
                     )
                 )
@@ -589,7 +637,7 @@ class FinancialWorkflowService:
             )
             if payment is None:
                 raise LookupError("payment not found")
-            party = session.get(Counterparty, payment.counterparty_id) if payment.counterparty_id else None
+            party, sender = self._payment_identity(session, payment)
             evidence = session.get(PaymentEvidence, payment.evidence_id) if payment.evidence_id else None
             attempt = self._latest_attempt(session, evidence.id) if evidence else None
             receipt = session.get(ReceiptImage, payment.receipt_id) if payment.receipt_id else None
@@ -608,7 +656,8 @@ class FinancialWorkflowService:
             lines = [
                 f"رسید #{payment.id}",
                 f"مبلغ: {toman(payment.amount_rial)}",
-                f"شخص: {party.display_name if party else 'تعیین‌نشده'}",
+                f"پرداخت‌کننده: {party.display_name if party else 'تعیین‌نشده'}",
+                f"فرستنده تلگرام: {sender.display_name if sender else 'نامشخص'}",
                 f"وضعیت سند: {_PAYMENT_STATES.get(payment.evidence_state, payment.evidence_state)}",
                 f"وضعیت وصول مستقل: {payment.settlement_state}",
                 f"تخصیص فعال: {toman(allocated)}",
@@ -700,6 +749,26 @@ class FinancialWorkflowService:
                 party = session.get(Counterparty, request.counterparty_id)
                 result.append((request.id, party.display_name if party else "نامشخص", maximum))
             return result
+
+    def counterparty_candidates(self, group_id: int, payment_id: int) -> list[tuple[int, str]]:
+        with self.database.session() as session:
+            payment = session.scalar(
+                select(Payment).where(Payment.id == payment_id, Payment.group_id == group_id)
+            )
+            if payment is None:
+                return []
+            return [
+                (item.id, item.display_name)
+                for item in session.scalars(
+                    select(Counterparty)
+                    .where(
+                        Counterparty.group_id == group_id,
+                        Counterparty.active.is_(True),
+                    )
+                    .order_by(Counterparty.display_name, Counterparty.id)
+                    .limit(20)
+                )
+            ]
 
     def canonical_payments(self, group_id: int, payment_id: int) -> list[tuple[int, int | None]]:
         with self.database.session() as session:
@@ -835,6 +904,24 @@ class FinancialWorkflowService:
                     reason=reason,
                 )
                 result = f"مبلغ رسید #{item.id} اصلاح و نسخه قبلی در تاریخچه حفظ شد."
+            elif operation == "payment_identity":
+                item = ledger.assign_payment_counterparty(
+                    int(state["payment_id"]),
+                    counterparty_id=int(state["counterparty_id"]),
+                    reviewer_user_id=user_id,
+                    reason=reason,
+                )
+                party = session.scalar(
+                    select(Counterparty).where(
+                        Counterparty.id == item.counterparty_id,
+                        Counterparty.group_id == group_id,
+                    )
+                )
+                result = (
+                    f"پرداخت‌کننده رسید #{item.id} به "
+                    f"{party.display_name if party else 'شخص انتخاب‌شده'} تغییر یافت؛ "
+                    "وضعیت تأیید سند تغییر نکرد."
+                )
             elif operation == "payment_allocate":
                 money = Money(int(state["amount_value"]), CurrencyUnit(str(state["amount_unit"])))
                 if money.canonical_rial is None:
@@ -880,6 +967,7 @@ class FinancialWorkflowService:
             "payment_reject": "رد رسید",
             "payment_duplicate": "علامت‌گذاری رسید تکراری",
             "payment_correct": "اصلاح مبلغ رسید",
+            "payment_identity": "تعیین پرداخت‌کننده رسید",
             "payment_allocate": "تخصیص رسید به درخواست",
             "allocation_confirm": "تأیید تخصیص",
             "allocation_cancel": "لغو تخصیص",
@@ -893,6 +981,7 @@ class FinancialWorkflowService:
             ("request_id", "درخواست"),
             ("allocation_id", "تخصیص"),
             ("canonical_payment_id", "رسید اصلی"),
+            ("counterparty_id", "شخص"),
         ):
             if key in state:
                 lines.append(f"{label}: #{state[key]}")

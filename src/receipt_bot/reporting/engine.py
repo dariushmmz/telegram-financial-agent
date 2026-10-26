@@ -38,7 +38,7 @@ from receipt_bot.reporting.models import (
 )
 
 
-CALCULATION_VERSION = "reconciliation-v1"
+CALCULATION_VERSION = "reconciliation-v2"
 COUNTABLE_PAYMENT_STATES = {
     PaymentEvidenceState.SUBMITTED.value,
     PaymentEvidenceState.NEEDS_REVIEW.value,
@@ -75,10 +75,17 @@ class ReportingEngine:
         message = self.session.get(TelegramMessage, source_message_id)
         if message is None or message.group_id != self.group_id:
             return None
+        sender = (
+            self.session.get(TelegramUser, message.sender_user_id)
+            if message.sender_user_id is not None
+            else None
+        )
         return SourceTrace(
             message_id=message.id,
             telegram_chat_id=self.group.telegram_chat_id,
             telegram_message_id=message.telegram_message_id,
+            sender_user_id=sender.id if sender else None,
+            sender_display_name=sender.display_name if sender else None,
         )
 
     def _revision_id(self, target_type: str, target_id: int, revision_number: int) -> int | None:
@@ -182,6 +189,7 @@ class ReportingEngine:
                 warnings.append("request_cancelled")
 
             submitted = 0
+            evidence_confirmed = 0
             confirmed = 0
             allocation_ids: list[int] = []
             payment_ids: list[int] = []
@@ -256,6 +264,8 @@ class ReportingEngine:
                     )
                     continue
                 submitted += allocation.allocated_rial
+                if payment.evidence_state == PaymentEvidenceState.CONFIRMED.value:
+                    evidence_confirmed += allocation.allocated_rial
                 if (
                     payment.evidence_state == PaymentEvidenceState.CONFIRMED.value
                     and allocation.state == AllocationState.CONFIRMED.value
@@ -293,6 +303,7 @@ class ReportingEngine:
                     request_state=request.state,
                     requested_rial=request.amount_rial,
                     submitted_rial=submitted,
+                    evidence_confirmed_rial=evidence_confirmed,
                     confirmed_rial=confirmed,
                     unverified_rial=unverified,
                     documented_difference_rial=documented_difference,
@@ -400,6 +411,13 @@ class ReportingEngine:
         line_submitted = sum(line.submitted_rial for line in request_lines)
         unallocated_total = sum(line.unallocated_rial for line in unallocated_lines)
         submitted_total = line_submitted + unallocated_total
+        evidence_confirmed_total = sum(
+            line.evidence_confirmed_rial for line in request_lines
+        ) + sum(
+            line.unallocated_rial
+            for line in unallocated_lines
+            if line.evidence_state == PaymentEvidenceState.CONFIRMED.value
+        )
         confirmed_total = sum(line.confirmed_rial for line in request_lines)
         promised_total = sum(
             line.amount_rial or 0
@@ -414,6 +432,7 @@ class ReportingEngine:
         totals = ReportTotals(
             requested_rial=requested_total,
             submitted_rial=submitted_total,
+            evidence_confirmed_rial=evidence_confirmed_total,
             confirmed_rial=confirmed_total,
             unverified_rial=submitted_total - confirmed_total,
             documented_difference_rial=sum(

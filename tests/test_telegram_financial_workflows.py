@@ -122,7 +122,13 @@ def activate(handler, gateway, *, chat_id: int, actor_id: int = 10) -> None:
     )
 
 
-def seed_finance(database, *, chat_id: int, two_payments: bool = False):
+def seed_finance(
+    database,
+    *,
+    chat_id: int,
+    two_payments: bool = False,
+    payment_has_counterparty: bool = True,
+):
     now = utc_now()
     with database.session() as session:
         group = session.scalar(select(TelegramGroup).where(TelegramGroup.telegram_chat_id == chat_id))
@@ -157,7 +163,7 @@ def seed_finance(database, *, chat_id: int, two_payments: bool = False):
         payment = ledger.create_payment(
             money=Money(60_000_000, CurrencyUnit.RIAL),
             source_message_id=receipt_message.id,
-            counterparty_id=party.id,
+            counterparty_id=party.id if payment_has_counterparty else None,
             transaction_reference="SENSITIVE-REF-7788",
             printed_transaction_at="1405/07/29 12:30",
             evidence_state=PaymentEvidenceState.SUBMITTED,
@@ -169,7 +175,7 @@ def seed_finance(database, *, chat_id: int, two_payments: bool = False):
             second = ledger.create_payment(
                 money=Money(60_000_000, CurrencyUnit.RIAL),
                 source_message_id=receipt_message.id,
-                counterparty_id=party.id,
+                counterparty_id=party.id if payment_has_counterparty else None,
                 transaction_reference="SECOND-REF",
                 evidence_state=PaymentEvidenceState.SUBMITTED,
                 actor_user_id=actor.id,
@@ -431,6 +437,87 @@ def test_verify_confirm_and_allocation_are_final_confirmed_and_idempotent(migrat
         assert payment.settlement_state == "externally_confirmed"
         assert allocation_row.state == "confirmed"
         assert session.scalar(select(func.count()).select_from(Review)) == 2
+
+
+def test_confirmed_unlinked_receipt_is_consistent_and_identity_can_be_resolved(
+    migrated_database,
+) -> None:
+    gateway = FakeTelegramGateway()
+    handler = TelegramUpdateHandler(
+        migrated_database, gateway, access_policy=TEST_ACCESS_POLICY
+    )
+    chat_id = -1005511
+    activate(handler, gateway, chat_id=chat_id)
+    seed = seed_finance(
+        migrated_database,
+        chat_id=chat_id,
+        payment_has_counterparty=False,
+    )
+
+    pending = run_command(handler, gateway, update_id=2, chat_id=chat_id, command="/verify")
+    payment_button = find_button(
+        pending["reply_markup"], f"رسید #{seed['payment_id']}"
+    )["callback_data"]
+    detail = click(handler, gateway, update_id=3, chat_id=chat_id, data=payment_button)
+    assert "پرداخت‌کننده: تعیین‌نشده" in detail["text"]
+    assert "فرستنده تلگرام: مدیر" in detail["text"]
+    confirm = find_button(detail["reply_markup"], "تأیید سند")["callback_data"]
+    click(handler, gateway, update_id=4, chat_id=chat_id, data=confirm)
+    final = complete_prompt(
+        handler,
+        gateway,
+        chat_id=chat_id,
+        prompt_message_id=len(gateway.sent),
+        text="رسید از نظر حسابداری بررسی شد",
+        update_id=5,
+    )
+    click(handler, gateway, update_id=6, chat_id=chat_id, data=final)
+
+    pending_after = run_command(
+        handler, gateway, update_id=7, chat_id=chat_id, command="/pending"
+    )
+    assert "مورد بازی برای بررسی وجود ندارد" in pending_after["text"]
+    receipts = run_command(
+        handler, gateway, update_id=8, chat_id=chat_id, command="/receipts"
+    )
+    assert "فرستنده تلگرام مدیر؛ پرداخت‌کننده تعیین‌نشده" in receipts["text"]
+    assert "تأیید حسابداری" in receipts["text"]
+    report = run_command(
+        handler, gateway, update_id=9, chat_id=chat_id, command="/reports"
+    )
+    assert "فرستنده تلگرام: مدیر (پرداخت‌کننده تعیین نشده)" in report["text"]
+    assert "تأیید حسابداری شده؛ هنوز به درخواست متصل نشده" in report["text"]
+    transactions = run_command(
+        handler, gateway, update_id=10, chat_id=chat_id, command="/transactions"
+    )
+    assert "فرستنده تلگرام مدیر؛ پرداخت‌کننده تعیین‌نشده" in transactions["text"]
+    review_payment = find_button(
+        transactions["reply_markup"], f"بررسی رسید #{seed['payment_id']}"
+    )["callback_data"]
+    detail = click(handler, gateway, update_id=11, chat_id=chat_id, data=review_payment)
+    identity = find_button(detail["reply_markup"], "تعیین پرداخت‌کننده")["callback_data"]
+    picker = click(handler, gateway, update_id=12, chat_id=chat_id, data=identity)
+    choose_party = find_button(picker["reply_markup"], "الناز")["callback_data"]
+    click(handler, gateway, update_id=13, chat_id=chat_id, data=choose_party)
+    final = complete_prompt(
+        handler,
+        gateway,
+        chat_id=chat_id,
+        prompt_message_id=len(gateway.sent),
+        text="هویت پرداخت‌کننده با مدارک بررسی شد",
+        update_id=14,
+    )
+    click(handler, gateway, update_id=15, chat_id=chat_id, data=final)
+
+    with migrated_database.session() as session:
+        payment = session.get(Payment, seed["payment_id"])
+        assert payment.counterparty_id == seed["party_id"]
+        assert payment.evidence_state == PaymentEvidenceState.CONFIRMED.value
+    report_after = run_command(
+        handler, gateway, update_id=16, chat_id=chat_id, command="/reports"
+    )
+    assert "• الناز:" in report_after["text"]
+    assert "شخص نامشخص" not in report_after["text"]
 
 
 def test_correction_preserves_original_revision(migrated_database) -> None:

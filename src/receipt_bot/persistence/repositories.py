@@ -87,7 +87,8 @@ class UserRepository:
         user = self.get_by_telegram_id(telegram_user_id)
         if user is not None:
             user.display_name = display_name or user.display_name
-            user.username = username
+            if username is not None:
+                user.username = username
             return user, False
         user = TelegramUser(
             telegram_user_id=telegram_user_id,

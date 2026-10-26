@@ -286,3 +286,38 @@ def test_report_period_is_start_inclusive_end_exclusive(migrated_database) -> No
         )
         assert [line.request_id for line in report.request_lines] == [included.id]
         assert [line.payment_id for line in report.unallocated_payments] == [start_payment.id]
+
+
+def test_confirmed_unallocated_receipt_reports_sender_without_calling_them_payer(
+    migrated_database,
+) -> None:
+    with migrated_database.session() as session:
+        seed = LedgerSeed(
+            session,
+            chat_id=-6105,
+            title="هویت فرستنده",
+            actor_telegram_id=605,
+        )
+        message = seed.message("رسید ارسال‌شده", START + timedelta(hours=1))
+        payment = LedgerService(session, seed.group.id).create_payment(
+            money=Money(1_000, CurrencyUnit.RIAL),
+            source_message_id=message.id,
+            evidence_state=PaymentEvidenceState.CONFIRMED,
+            actor_user_id=seed.actor.id,
+        )
+
+        report = ReportingEngine(session, seed.group.id).build(
+            period_start=START, period_end=END, as_of=END
+        )
+        line = report.unallocated_payments[0]
+        rendered = render_persian_report(report)
+
+        assert line.payment_id == payment.id
+        assert line.counterparty_id is None
+        assert line.source is not None
+        assert line.source.sender_display_name == "حسابدار"
+        assert report.totals.evidence_confirmed_rial == 1_000
+        assert report.totals.confirmed_rial == 0
+        assert "فرستنده تلگرام: حسابدار (پرداخت‌کننده تعیین نشده)" in rendered
+        assert "تأیید حسابداری شده؛ هنوز به درخواست متصل نشده" in rendered
+        assert "شخص نامشخص" not in rendered

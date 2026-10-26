@@ -551,6 +551,51 @@ class LedgerService:
         )
         return payment
 
+    def assign_payment_counterparty(
+        self,
+        payment_id: int,
+        *,
+        counterparty_id: int,
+        reviewer_user_id: int,
+        reason: str,
+    ) -> Payment:
+        """Resolve a payer manually without changing evidence or settlement state."""
+        self._actor(reviewer_user_id)
+        payment = self._get(Payment, payment_id)
+        self._get(Counterparty, counterparty_id)
+        allocated_request_counterparties = set(
+            self.session.scalars(
+                select(PaymentRequest.counterparty_id)
+                .join(
+                    RequestPaymentAllocation,
+                    RequestPaymentAllocation.request_id == PaymentRequest.id,
+                )
+                .where(
+                    RequestPaymentAllocation.group_id == self.group_id,
+                    RequestPaymentAllocation.payment_id == payment.id,
+                    RequestPaymentAllocation.state.in_(ACTIVE_ALLOCATION_STATES),
+                )
+            )
+        )
+        if allocated_request_counterparties and allocated_request_counterparties != {
+            counterparty_id
+        }:
+            raise LedgerConflict("counterparty conflicts with active allocations")
+        if payment.counterparty_id == counterparty_id:
+            raise LedgerConflict("payment already has this counterparty")
+        payment.counterparty_id = counterparty_id
+        payment.revision_number += 1
+        self.session.flush()
+        self._append_change(
+            target_type="payment",
+            item=payment,
+            reason=reason,
+            actor_user_id=reviewer_user_id,
+            decision=ReviewDecision.CORRECTED,
+            comment=reason,
+        )
+        return payment
+
     def correct_request(
         self,
         request_id: int,
@@ -674,10 +719,23 @@ class LedgerService:
         self._actor(reviewer_user_id)
         allocation = self._get(RequestPaymentAllocation, allocation_id)
         payment = self._get(Payment, allocation.payment_id)
+        request = self._get(PaymentRequest, allocation.request_id)
         if allocation.state != AllocationState.PROPOSED.value:
             raise LedgerConflict("only proposed allocations can be confirmed")
         if payment.evidence_state != PaymentEvidenceState.CONFIRMED.value:
             raise LedgerConflict("payment evidence must be confirmed first")
+        if payment.counterparty_id not in {None, request.counterparty_id}:
+            raise LedgerConflict("payment and request counterparties differ")
+        if payment.counterparty_id is None:
+            payment.counterparty_id = request.counterparty_id
+            payment.revision_number += 1
+            self.session.flush()
+            self._append_change(
+                target_type="payment",
+                item=payment,
+                reason=f"identity resolved by confirmed allocation #{allocation.id}: {reason}",
+                actor_user_id=reviewer_user_id,
+            )
         allocation.state = AllocationState.CONFIRMED.value
         allocation.revision_number += 1
         self.session.flush()

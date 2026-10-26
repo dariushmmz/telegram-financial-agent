@@ -780,10 +780,13 @@ class TelegramUpdateHandler:
             ],
             [
                 {"text": "اصلاح مبلغ", "callback_data": callback(token, f"correct_{payment_id}")},
-                {"text": "اتصال/تقسیم", "callback_data": callback(token, f"link_{payment_id}")},
+                {"text": "تعیین پرداخت‌کننده", "callback_data": callback(token, f"identity_{payment_id}")},
             ],
             [
+                {"text": "اتصال/تقسیم", "callback_data": callback(token, f"link_{payment_id}")},
                 {"text": "تکراری", "callback_data": callback(token, f"duplicate_{payment_id}")},
+            ],
+            [
                 {"text": "ثبت وصول مستقل", "callback_data": callback(token, f"settlement_{payment_id}")},
             ],
         ]
@@ -1441,6 +1444,59 @@ class TelegramUpdateHandler:
                 chat_id=chat_id,
                 operation="payment_duplicate",
                 state={"payment_id": payment_id, "canonical_payment_id": canonical_id},
+            )
+            return
+
+        if action.startswith("identity_"):
+            try:
+                payment_id = int(action.removeprefix("identity_"))
+            except ValueError:
+                await self.gateway.send_message(chat_id, texts.CALLBACK_UNKNOWN)
+                return
+            candidates = self.financial.counterparty_candidates(group.id, payment_id)
+            callback = self.interactions.callback_data
+            rows = [
+                [
+                    {
+                        "text": name,
+                        "callback_data": callback(token, f"idc_{payment_id}_{party_id}"),
+                    }
+                ]
+                for party_id, name in candidates
+            ]
+            if not rows:
+                await self.gateway.send_message(
+                    chat_id,
+                    "شخصی در این گروه ثبت نشده است. ابتدا درخواست یا وعده پرداخت شخص را ثبت کنید.",
+                )
+                return
+            await self.gateway.send_message(
+                chat_id,
+                "پرداخت‌کننده واقعی را انتخاب کنید. فرستنده تلگرام الزاماً پرداخت‌کننده نیست.",
+                reply_markup={"inline_keyboard": rows},
+            )
+            return
+
+        if action.startswith("idc_"):
+            try:
+                _, payment_id, counterparty_id = action.split("_", 2)
+                payment_id, counterparty_id = int(payment_id), int(counterparty_id)
+            except ValueError:
+                await self.gateway.send_message(chat_id, texts.CALLBACK_UNKNOWN)
+                return
+            candidates = {
+                item[0]
+                for item in self.financial.counterparty_candidates(group.id, payment_id)
+            }
+            if counterparty_id not in candidates:
+                await self.gateway.send_message(chat_id, texts.CALLBACK_UNKNOWN)
+                return
+            await self._start_action_prompt(
+                group=group,
+                user=user,
+                chat_id=chat_id,
+                operation="payment_identity",
+                state={"payment_id": payment_id, "counterparty_id": counterparty_id},
             )
             return
 

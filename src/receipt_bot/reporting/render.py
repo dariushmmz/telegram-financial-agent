@@ -37,8 +37,9 @@ def render_persian_report(report: ReportProjection) -> str:
         line = (
             f"{index}. {item.counterparty_name}: درخواست {_toman(item.requested_rial)}؛ "
             f"مبلغ مستند {_toman(item.submitted_rial)}؛ "
-            f"تأییدشده {_toman(item.confirmed_rial)}؛ "
-            f"تأییدنشده {_toman(item.unverified_rial)}؛ "
+            f"رسید تأیید حسابداری‌شده {_toman(item.evidence_confirmed_rial)}؛ "
+            f"تخصیص تأییدشده {_toman(item.confirmed_rial)}؛ "
+            f"در انتظار تأیید تخصیص {_toman(item.unverified_rial)}؛ "
             f"اختلاف {difference}؛ وضعیت: {_STATUS[item.status]}."
         )
         lines.append(line.translate(_PERSIAN_DIGITS))
@@ -48,9 +49,23 @@ def render_persian_report(report: ReportProjection) -> str:
     if report.unallocated_payments:
         lines.extend(["", "رسیدهای تخصیص‌نیافته:"])
         for item in report.unallocated_payments:
-            name = item.counterparty_name or "شخص نامشخص"
+            if item.counterparty_name:
+                identity = item.counterparty_name
+            elif item.source and item.source.sender_display_name:
+                identity = (
+                    f"فرستنده تلگرام: {item.source.sender_display_name} "
+                    "(پرداخت‌کننده تعیین نشده)"
+                )
+            else:
+                identity = "پرداخت‌کننده تعیین نشده"
+            if item.evidence_state == "confirmed":
+                state = "تأیید حسابداری شده؛ هنوز به درخواست متصل نشده"
+            elif item.evidence_state == "needs_review":
+                state = "نیازمند بررسی حسابداری و اتصال به درخواست"
+            else:
+                state = "تأیید حسابداری نشده؛ هنوز به درخواست متصل نشده"
             lines.append(
-                f"• {name}: {_toman(item.unallocated_rial)} — نیازمند اتصال به درخواست."
+                f"• {identity}: {_toman(item.unallocated_rial)} — {state}."
             )
 
     if report.promises:
@@ -64,8 +79,9 @@ def render_persian_report(report: ReportProjection) -> str:
             "",
             f"جمع درخواست‌های قابل مقایسه: {_toman(totals.requested_rial)}",
             f"جمع مبالغ مستند: {_toman(totals.submitted_rial)}",
-            f"جمع تأییدشده: {_toman(totals.confirmed_rial)}",
-            f"جمع تأییدنشده: {_toman(totals.unverified_rial)}",
+            f"جمع رسیدهای تأیید حسابداری‌شده: {_toman(totals.evidence_confirmed_rial)}",
+            f"جمع تخصیص‌های تأییدشده به درخواست: {_toman(totals.confirmed_rial)}",
+            f"جمع تأییدنشده از نظر اتصال/تخصیص: {_toman(totals.unverified_rial)}",
             f"اختلاف قابل مقایسه: {_toman(totals.documented_difference_rial)}",
         ]
     )

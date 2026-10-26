@@ -86,6 +86,58 @@ def test_confirmed_payment_and_allocation_keep_settlement_separate(migrated_data
         assert session.scalar(select(func.count()).select_from(RecordRevision)) == 6
 
 
+def test_confirmed_allocation_resolves_unassigned_payment_counterparty_with_history(
+    migrated_database,
+) -> None:
+    with migrated_database.session() as session:
+        seed = LedgerSeed(session, chat_id=-5109, title="هویت", actor_telegram_id=509)
+        ledger = LedgerService(session, seed.group.id)
+        person = ledger.add_counterparty("الناز")
+        request = ledger.create_request(
+            counterparty_id=person.id,
+            requested_at=NOW,
+            money=Money(100, CurrencyUnit.RIAL),
+            actor_user_id=seed.actor.id,
+        )
+        payment = ledger.create_payment(
+            money=Money(100, CurrencyUnit.RIAL),
+            evidence_state=PaymentEvidenceState.SUBMITTED,
+            actor_user_id=seed.actor.id,
+        )
+        allocation = ledger.allocate(
+            request_id=request.id,
+            payment_id=payment.id,
+            allocated_rial=100,
+            actor_user_id=seed.actor.id,
+        )
+        ledger.review_payment(
+            payment.id,
+            reviewer_user_id=seed.actor.id,
+            decision=ReviewDecision.CONFIRMED,
+            reason="سند معتبر است",
+        )
+        revision_before = payment.revision_number
+
+        ledger.confirm_allocation(
+            allocation.id,
+            reviewer_user_id=seed.actor.id,
+            reason="پرداخت متعلق به این درخواست است",
+        )
+
+        assert payment.counterparty_id == person.id
+        assert payment.revision_number == revision_before + 1
+        assert allocation.state == AllocationState.CONFIRMED.value
+        identity_revision = session.scalar(
+            select(RecordRevision).where(
+                RecordRevision.target_type == "payment",
+                RecordRevision.target_id == payment.id,
+                RecordRevision.revision_number == payment.revision_number,
+            )
+        )
+        assert identity_revision is not None
+        assert identity_revision.snapshot["counterparty_id"] == person.id
+
+
 def test_split_allocations_caps_unknown_units_and_counterparty_mismatch(migrated_database) -> None:
     with migrated_database.session() as session:
         seed = LedgerSeed(session, chat_id=-5102, title="تقسیم", actor_telegram_id=502)

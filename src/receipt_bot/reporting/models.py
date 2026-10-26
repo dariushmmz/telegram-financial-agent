@@ -10,6 +10,8 @@ class SourceTrace:
     message_id: int
     telegram_chat_id: int
     telegram_message_id: int
+    sender_user_id: int | None = None
+    sender_display_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,6 +22,7 @@ class RequestReportLine:
     request_state: str
     requested_rial: int | None
     submitted_rial: int
+    evidence_confirmed_rial: int
     confirmed_rial: int
     unverified_rial: int
     documented_difference_rial: int | None
@@ -71,6 +74,7 @@ class ReportExclusion:
 class ReportTotals:
     requested_rial: int
     submitted_rial: int
+    evidence_confirmed_rial: int
     confirmed_rial: int
     unverified_rial: int
     documented_difference_rial: int
