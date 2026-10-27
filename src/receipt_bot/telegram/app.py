@@ -25,6 +25,10 @@ async def run_bot(settings: AppSettings, *, stop_event: asyncio.Event | None = N
         raise ExtractionConfigurationError("TELEGRAM_BOT_TOKEN is required")
     configure_logging(settings.log_level)
     health = prepare_runtime(settings)
+    # Alembic's logging configuration is loaded while preparing the runtime.
+    # Restore the application's sanitized JSON handler before polling and
+    # worker tasks start so operational events remain visible in production.
+    configure_logging(settings.log_level)
     LOGGER.info(
         "runtime ready",
         extra={

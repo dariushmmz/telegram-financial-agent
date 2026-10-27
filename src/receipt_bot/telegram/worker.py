@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import random
 from collections.abc import Callable
 from datetime import datetime, timedelta
@@ -634,7 +635,18 @@ class ReceiptJobWorker:
         self, attempt_number: int, retry_after_seconds: float | None = None
     ) -> float:
         exponent = max(attempt_number - 1, 0)
-        base = min(self.retry_base_seconds * (2**exponent), self.retry_max_seconds)
+        if self.retry_base_seconds <= 0:
+            base = 0.0
+        else:
+            saturation_exponent = max(
+                0,
+                math.ceil(math.log2(self.retry_max_seconds / self.retry_base_seconds)),
+            )
+            base = (
+                self.retry_max_seconds
+                if exponent >= saturation_exponent
+                else self.retry_base_seconds * (2**exponent)
+            )
         jitter = base * self.retry_jitter_ratio * max(min(self.random_source(), 1.0), 0.0)
         return max(base + jitter, retry_after_seconds or 0.0)
 

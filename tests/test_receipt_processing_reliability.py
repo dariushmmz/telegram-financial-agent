@@ -210,7 +210,12 @@ def test_existing_over_limit_job_becomes_terminal_without_provider_replay(
         max_extraction_attempts=1,
     )
     with migrated_database.session() as session:
-        session.scalar(select(ReceiptJob)).available_at = utc_now()
+        legacy_job = session.scalar(select(ReceiptJob))
+        legacy_job.available_at = utc_now()
+        # Production contained jobs with thousands of attempts from the old
+        # unbounded retry loop. Terminalizing them must not overflow while
+        # calculating a capped delay that will never be scheduled.
+        legacy_job.attempt_count = 2_080
     assert asyncio.run(restarted_worker.run_once()) is True
     assert replacement_provider.calls == []
     with migrated_database.session() as session:
