@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -86,6 +87,15 @@ def test_prepare_runtime_migrates_fresh_database_and_healthchecks(tmp_path: Path
     assert Path(report.database_path).is_file()
     assert Path(report.receipt_storage_path).is_dir()
     assert healthcheck(settings, root=PROJECT_ROOT) == report
+
+
+def test_prepare_runtime_does_not_disable_application_loggers(tmp_path: Path) -> None:
+    logger = logging.getLogger("receipt_bot.telegram.worker")
+    logger.disabled = False
+
+    prepare_runtime(settings_for(tmp_path), root=PROJECT_ROOT)
+
+    assert logger.disabled is False
 
 
 def test_online_backup_and_separate_restore_preserve_report_fixture(tmp_path: Path) -> None:
