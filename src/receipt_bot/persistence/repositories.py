@@ -4,7 +4,7 @@ import secrets
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from receipt_bot.persistence.models import (
@@ -317,9 +317,13 @@ class ReceiptJobRepository:
         self.session.flush()
         return item, True
 
-    def claim_next(self, *, now: datetime | None = None) -> ReceiptJob | None:
+    def claim_next(
+        self, *, now: datetime | None = None, allow_extraction: bool = True
+    ) -> ReceiptJob | None:
         now = now or utc_now()
-        statuses = self.CLAIMABLE_DOWNLOAD | self.CLAIMABLE_EXTRACTION
+        statuses = set(self.CLAIMABLE_DOWNLOAD)
+        if allow_extraction:
+            statuses.update(self.CLAIMABLE_EXTRACTION)
         conditions = [ReceiptJob.status.in_(statuses), ReceiptJob.available_at <= now]
         if self.group_id is not None:
             conditions.append(ReceiptJob.group_id == self.group_id)
@@ -499,7 +503,7 @@ class ReceiptJobRepository:
         stage: str,
         error_code: str,
         retryable: bool,
-        retry_delay_seconds: int = 30,
+        retry_delay_seconds: float = 30,
     ) -> None:
         if retryable:
             job.status = (
@@ -626,7 +630,7 @@ class TextReceiptJobRepository:
         *,
         error_code: str,
         retryable: bool,
-        retry_delay_seconds: int = 30,
+        retry_delay_seconds: float = 30,
     ) -> None:
         if retryable:
             job.status = ReceiptJobState.EXTRACTION_FAILED_RETRYABLE.value
@@ -994,6 +998,17 @@ class ExtractionAttemptRepository:
             .limit(1)
         )
         return (latest or 0) + 1
+
+    def count_for_evidence(self, evidence_id: int) -> int:
+        return int(
+            self.session.scalar(
+                select(func.count(ExtractionAttempt.id)).where(
+                    ExtractionAttempt.group_id == self.group_id,
+                    ExtractionAttempt.evidence_id == evidence_id,
+                )
+            )
+            or 0
+        )
 
     def append_success(
         self,

@@ -21,7 +21,7 @@ from receipt_bot.extraction.errors import (
     ProviderUnavailableError,
 )
 from receipt_bot.extraction.image import prepare_image
-from receipt_bot.extraction.providers.common import RetryPolicy
+from receipt_bot.extraction.providers.common import RetryPolicy, parse_retry_after
 from receipt_bot.extraction.providers.factory import build_provider
 from receipt_bot.extraction.providers.gemini import (
     GeminiProvider,
@@ -99,6 +99,23 @@ def test_gemini_adapter_contract_uses_structured_image_request() -> None:
     assert call["config"].response_mime_type == "application/json"
 
 
+def test_gemini_client_has_explicit_timeout_and_disables_sdk_retries(monkeypatch) -> None:
+    captured = {}
+
+    def client_factory(**kwargs):
+        captured.update(kwargs)
+        return FakeGeminiClient([gemini_response()])
+
+    monkeypatch.setattr("receipt_bot.extraction.providers.gemini.genai.Client", client_factory)
+    provider = GeminiProvider(
+        api_key="test-key", models=["gemini-test"], timeout_seconds=12.5
+    )
+    provider.extract(prepared_image())
+    options = captured["http_options"]
+    assert options.timeout == 12_500
+    assert options.retry_options.attempts == 1
+
+
 def test_gemini_adapter_supports_untrusted_text_receipts() -> None:
     client = FakeGeminiClient([gemini_response()])
     provider = GeminiProvider(api_key="test-key", models=["gemini-test"], client=client)
@@ -158,6 +175,20 @@ def test_gemini_rate_limit_retries_without_leaking_response() -> None:
     )
     provider.extract(prepared_image())
     assert delays == [0.25]
+
+
+def test_gemini_rate_limit_does_not_fan_out_across_model_fallbacks() -> None:
+    client = FakeGeminiClient(
+        [errors.ClientError(429, {"error": {"message": "limited"}})]
+    )
+    provider = GeminiProvider(
+        api_key="test-key",
+        models=["primary", "fallback"],
+        client=client,
+    )
+    with pytest.raises(ProviderRateLimitError):
+        provider.extract(prepared_image())
+    assert [call["model"] for call in client.models.calls] == ["primary"]
 
 
 def test_gemini_malformed_refusal_timeout_and_auth_errors() -> None:
@@ -299,6 +330,26 @@ def test_openrouter_rate_limit_retries_then_succeeds() -> None:
     provider.extract(prepared_image())
     assert calls == 2
     assert delays == [0.5]
+
+
+def test_openrouter_preserves_retry_after_hint_without_default_nested_retry() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(429, headers={"Retry-After": "17"})
+
+    provider = OpenRouterProvider(
+        api_key="x",
+        model="m",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(ProviderRateLimitError) as caught:
+        provider.extract(prepared_image())
+    assert calls == 1
+    assert caught.value.retry_after_seconds == 17
+    assert parse_retry_after("not-a-delay") is None
 
 
 def test_openrouter_malformed_refusal_and_timeout() -> None:

@@ -115,6 +115,24 @@ CLEANUP_UNAVAILABLE = "⚠️ فضای مدیریت‌شده تصاویر برا
 CLEANUP_CHANGED = "⚠️ فهرست تصاویر واجد شرایط تغییر کرده است. برای پیش‌نمایش تازه دوباره /cleanup را اجرا کنید."
 
 
+def receipt_processing_delayed(*, kind: str, job_id: int) -> str:
+    label = "تصویری" if kind == "image" else "متنی"
+    return (
+        f"⏳ پردازش رسید {label} شماره {job_id} بیش از زمان معمول طول کشیده است.\n"
+        "رسید در سامانه محفوظ است؛ لطفاً آن را دوباره ارسال نکنید. "
+        "وضعیت از /receipts قابل پیگیری است."
+    ).translate(_PERSIAN_DIGITS)
+
+
+def receipt_processing_failed(*, kind: str, job_id: int) -> str:
+    label = "تصویری" if kind == "image" else "متنی"
+    return (
+        f"⚠️ پردازش رسید {label} شماره {job_id} پس از چند تلاش به نتیجه نرسید.\n"
+        "اصل ورودی و سابقه آن حذف نشده است. حسابدار مجاز می‌تواند مورد را در "
+        "/pending یا /receipts بررسی کند."
+    ).translate(_PERSIAN_DIGITS)
+
+
 _PERSIAN_DIGITS = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
 
 

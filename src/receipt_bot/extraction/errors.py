@@ -27,9 +27,20 @@ class ImageLimitError(InvalidImageError):
 class ProviderError(ExtractionError):
     code = "provider_error"
 
-    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        retry_after_seconds: float | None = None,
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
+        self.retry_after_seconds = (
+            max(float(retry_after_seconds), 0.0)
+            if retry_after_seconds is not None
+            else None
+        )
 
 
 class ProviderAuthenticationError(ProviderError):

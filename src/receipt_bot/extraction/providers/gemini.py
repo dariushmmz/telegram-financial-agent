@@ -22,7 +22,7 @@ from receipt_bot.extraction.errors import (
 )
 from receipt_bot.extraction.image import PreparedImage
 from receipt_bot.extraction.prompt import RECEIPT_PROMPT, TEXT_RECEIPT_PROMPT
-from receipt_bot.extraction.providers.common import RetryPolicy
+from receipt_bot.extraction.providers.common import RetryPolicy, parse_retry_after
 from receipt_bot.extraction.schema import ProviderReceipt, ProviderResult
 
 
@@ -45,12 +45,19 @@ def _gemini_response_schema() -> dict[str, Any]:
 
 def map_gemini_error(error: errors.APIError) -> ProviderError:
     code = getattr(error, "code", None)
+    response = getattr(error, "response", None)
+    headers = getattr(response, "headers", None)
+    retry_after = parse_retry_after(headers.get("Retry-After")) if headers is not None else None
     if code in (401, 403):
         return ProviderAuthenticationError("Gemini authentication failed", status_code=code)
     if code == 404:
         return ProviderModelUnavailableError("Gemini model is unavailable", status_code=code)
     if code == 429:
-        return ProviderRateLimitError("Gemini rate limit reached", status_code=code)
+        return ProviderRateLimitError(
+            "Gemini rate limit reached",
+            status_code=code,
+            retry_after_seconds=retry_after,
+        )
     if code in (408, 504):
         return ProviderTimeoutError("Gemini request timed out", status_code=code)
     if code in (500, 502, 503):
@@ -125,6 +132,7 @@ class GeminiProvider:
         api_key: str,
         models: Sequence[str],
         client: Any | None = None,
+        timeout_seconds: float = 45.0,
         retry_policy: RetryPolicy | None = None,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -133,7 +141,15 @@ class GeminiProvider:
         self.models = tuple(model.strip() for model in models if model.strip())
         if not self.models:
             raise ValueError("at least one Gemini model is required")
-        self.client = client or genai.Client(api_key=api_key)
+        if timeout_seconds <= 0:
+            raise ValueError("Gemini timeout must be positive")
+        self.client = client or genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(
+                timeout=int(timeout_seconds * 1000),
+                retry_options=types.HttpRetryOptions(attempts=1),
+            ),
+        )
         self.retry_policy = retry_policy or RetryPolicy()
         self.sleep = sleep
 
@@ -182,6 +198,14 @@ class GeminiProvider:
                     self.sleep(self.retry_policy.delay(attempt))
                     continue
                 break
+
+            # Model fallback is only meaningful for a missing/retired model.
+            # Quota, transport and timeout failures are provider-wide enough
+            # that trying every configured model would multiply rejected calls.
+            if last_error is not None and not isinstance(
+                last_error, ProviderModelUnavailableError
+            ):
+                raise last_error from None
 
         if last_error is None:
             raise ProviderError("Gemini extraction failed")

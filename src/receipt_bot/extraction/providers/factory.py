@@ -28,6 +28,7 @@ def build_provider(
             api_key=api_key,
             models=settings.configured_gemini_models,
             client=gemini_client,
+            timeout_seconds=settings.provider_request_timeout_seconds,
         )
     if settings.extraction_provider == "openrouter":
         api_key = _secret_value(settings.openrouter_api_key)
@@ -39,5 +40,6 @@ def build_provider(
             api_key=api_key,
             model=settings.openrouter_model,
             client=openrouter_client,
+            timeout_seconds=settings.provider_request_timeout_seconds,
         )
     raise ExtractionConfigurationError("unsupported extraction provider")

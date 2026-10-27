@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from receipt_bot.domain.enums import (
     AllocationState,
@@ -28,10 +28,12 @@ from receipt_bot.persistence.models import (
     PaymentPromise,
     PaymentRequest,
     ReceiptImage,
+    ReceiptJob,
     RequestPaymentAllocation,
     TelegramGroup,
     TelegramMessage,
     TelegramUser,
+    TextReceiptJob,
 )
 from receipt_bot.persistence.repositories import InteractionRepository
 from receipt_bot.reconciliation import LedgerService
@@ -69,10 +71,53 @@ _STORAGE_STATES = {
     "missing": "تصویر اصلی در فضای ذخیره‌سازی یافت نشد",
     "delete_failed": "حذف تصویر ناموفق یا ناامن بود",
 }
+_JOB_STATES = {
+    "queued_download": "در صف دریافت تصویر",
+    "downloading": "در حال دریافت تصویر",
+    "download_failed_retryable": "تلاش مجدد برای دریافت تصویر",
+    "queued_extraction": "در صف استخراج اطلاعات",
+    "extracting": "در حال استخراج اطلاعات",
+    "extraction_failed_retryable": "تلاش مجدد پس از اختلال پردازش",
+    "succeeded": "پردازش تکمیل شده",
+    "duplicate_exact": "تکراری؛ دوباره محاسبه نمی‌شود",
+    "failed_final": "پردازش ناموفق نهایی؛ نیازمند بررسی",
+}
+_UNFINISHED_JOB_STATES = {
+    "queued_download",
+    "downloading",
+    "download_failed_retryable",
+    "queued_extraction",
+    "extracting",
+    "extraction_failed_retryable",
+    "failed_final",
+}
 
 
 class FinancialInputError(ValueError):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class ReceiptProcessingCounts:
+    queued: int = 0
+    processing: int = 0
+    retrying: int = 0
+    failed: int = 0
+
+    @property
+    def total(self) -> int:
+        return self.queued + self.processing + self.retrying + self.failed
+
+    def warning(self) -> str | None:
+        if not self.total:
+            return None
+        return (
+            "⚠️ هشدار کامل‌بودن گزارش: "
+            f"{self.total} رسید هنوز وارد محاسبات مالی نشده است "
+            f"(در صف {self.queued}، در حال پردازش {self.processing}، "
+            f"تلاش مجدد {self.retrying}، ناموفق {self.failed}). "
+            "تا تعیین تکلیف این موارد، جمع‌ها ممکن است ناقص باشند."
+        ).translate(_PERSIAN_DIGITS)
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,6 +301,9 @@ class FinancialWorkflowService:
             engine = ReportingEngine(session, group_id)
             projection = engine.build(period_start=start, period_end=end)
             rendered = render_persian_report(projection)
+            warning = self._processing_counts(session, group_id, start, end).warning()
+            if warning:
+                rendered = f"{rendered}\n\n{warning}"
             engine.record_run(
                 projection,
                 requested_by_user_id=user_id,
@@ -282,6 +330,10 @@ class FinancialWorkflowService:
             "",
             "رسید به معنی وصول بانکی نیست و اختلاف درخواست، بدهی کلی شخص محسوب نمی‌شود.",
         ]
+        with self.database.session() as session:
+            warning = self._processing_counts(session, group_id, start, end).warning()
+        if warning:
+            lines.extend(["", warning])
         return "\n".join(lines).translate(_PERSIAN_DIGITS)
 
     def capture_source(
@@ -334,25 +386,74 @@ class FinancialWorkflowService:
         start, end = period.utc_bounds
         with self.database.session() as session:
             query = (
-                select(Payment)
+                select(TelegramMessage, ReceiptJob, TextReceiptJob, PaymentEvidence, Payment)
+                .outerjoin(ReceiptJob, ReceiptJob.source_message_id == TelegramMessage.id)
+                .outerjoin(TextReceiptJob, TextReceiptJob.source_message_id == TelegramMessage.id)
+                .outerjoin(PaymentEvidence, PaymentEvidence.source_message_id == TelegramMessage.id)
+                .outerjoin(Payment, Payment.evidence_id == PaymentEvidence.id)
                 .where(
-                    Payment.group_id == group_id,
-                    Payment.created_at >= start,
-                    Payment.created_at < end,
+                    TelegramMessage.group_id == group_id,
+                    TelegramMessage.occurred_at >= start,
+                    TelegramMessage.occurred_at < end,
+                    or_(ReceiptJob.id.is_not(None), TextReceiptJob.id.is_not(None)),
                 )
-                .order_by(Payment.created_at.desc(), Payment.id.desc())
+                .order_by(TelegramMessage.occurred_at.desc(), TelegramMessage.id.desc())
             )
-            rows, has_previous, has_next = self._page(session, query, page)
+            page = max(page, 0)
+            job_rows = list(session.execute(query))
+            entries: list[tuple[datetime, str, Any]] = [
+                (row[0].occurred_at, "job", row) for row in job_rows
+            ]
+            job_payment_ids = {row[4].id for row in job_rows if row[4] is not None}
+            manual_payments = list(
+                session.scalars(
+                    select(Payment).where(
+                        Payment.group_id == group_id,
+                        Payment.created_at >= start,
+                        Payment.created_at < end,
+                        Payment.id.not_in(job_payment_ids) if job_payment_ids else True,
+                    )
+                )
+            )
+            entries.extend((payment.created_at, "payment", payment) for payment in manual_payments)
+            entries.sort(key=lambda item: (item[0], getattr(item[2], "id", 0)), reverse=True)
+            first = page * PAGE_SIZE
+            rows = entries[first : first + PAGE_SIZE]
+            has_previous, has_next = page > 0, first + PAGE_SIZE < len(entries)
             lines = [f"رسیدها — {self._period_label(period)}"]
             ids: list[int] = []
-            for payment in rows:
+            for _occurred_at, entry_kind, entry in rows:
+                if entry_kind == "payment":
+                    payment = entry
+                    ids.append(payment.id)
+                    party, sender = self._payment_identity(session, payment)
+                    receipt = session.get(ReceiptImage, payment.receipt_id) if payment.receipt_id else None
+                    kind = "تصویر" if receipt is not None else "ثبت دستی/متن"
+                    storage = (
+                        _STORAGE_STATES.get(receipt.storage_state, receipt.storage_state)
+                        if receipt
+                        else "بدون فایل تصویر"
+                    )
+                    lines.append(
+                        f"• رسید #{payment.id} ({kind}): {toman(payment.amount_rial)}؛ "
+                        f"{self._payment_identity_label(party, sender)}؛ "
+                        f"وضعیت {_PAYMENT_STATES.get(payment.evidence_state, payment.evidence_state)}؛ "
+                        f"پردازش ثبت‌شده؛ تصویر {storage}."
+                    )
+                    continue
+                _message, image_job, text_job, _evidence, payment = entry
+                job = image_job or text_job
+                kind = "تصویر" if image_job is not None else "متن"
+                state = _JOB_STATES.get(job.status, job.status)
+                if payment is None:
+                    lines.append(
+                        f"• ورودی {kind} #{job.id}: مبلغ هنوز استخراج نشده؛ "
+                        f"وضعیت {state}؛ تعداد تلاش {job.attempt_count}."
+                    )
+                    continue
                 ids.append(payment.id)
                 party, sender = self._payment_identity(session, payment)
-                evidence = session.get(PaymentEvidence, payment.evidence_id) if payment.evidence_id else None
-                attempt = self._latest_attempt(session, evidence.id) if evidence else None
                 receipt = session.get(ReceiptImage, payment.receipt_id) if payment.receipt_id else None
-                kind = "تصویر" if evidence and evidence.evidence_kind == "image" else "متن"
-                processing = attempt.status if attempt else "ثبت دستی/نامشخص"
                 storage = (
                     _STORAGE_STATES.get(receipt.storage_state, receipt.storage_state)
                     if receipt
@@ -362,7 +463,7 @@ class FinancialWorkflowService:
                     f"• رسید #{payment.id} ({kind}): {toman(payment.amount_rial)}؛ "
                     f"{self._payment_identity_label(party, sender)}؛ "
                     f"وضعیت {_PAYMENT_STATES.get(payment.evidence_state, payment.evidence_state)}؛ "
-                    f"پردازش {processing}؛ تصویر {storage}."
+                    f"پردازش {state}؛ تصویر {storage}."
                 )
             if not rows:
                 lines.append("موردی در این بازه ثبت نشده است.")
@@ -391,8 +492,30 @@ class FinancialWorkflowService:
                     .order_by(RequestPaymentAllocation.created_at, RequestPaymentAllocation.id)
                 )
             )
+            failed_images = list(
+                session.scalars(
+                    select(ReceiptJob)
+                    .where(
+                        ReceiptJob.group_id == group_id,
+                        ReceiptJob.status == "failed_final",
+                    )
+                    .order_by(ReceiptJob.created_at, ReceiptJob.id)
+                )
+            )
+            failed_texts = list(
+                session.scalars(
+                    select(TextReceiptJob)
+                    .where(
+                        TextReceiptJob.group_id == group_id,
+                        TextReceiptJob.status == "failed_final",
+                    )
+                    .order_by(TextReceiptJob.created_at, TextReceiptJob.id)
+                )
+            )
             combined = [("payment", item) for item in payments] + [
                 ("allocation", item) for item in allocations
+            ] + [("failed_image", item) for item in failed_images] + [
+                ("failed_text", item) for item in failed_texts
             ]
             start = max(page, 0) * PAGE_SIZE
             selected = combined[start : start + PAGE_SIZE]
@@ -406,10 +529,17 @@ class FinancialWorkflowService:
                         f"{_PAYMENT_STATES.get(item.evidence_state, item.evidence_state)}."
                     )
                 else:
-                    lines.append(
-                        f"• تخصیص #{item.id}: {toman(item.allocated_rial)}؛ "
-                        f"رسید #{item.payment_id} ← درخواست #{item.request_id}."
-                    )
+                    if kind == "allocation":
+                        lines.append(
+                            f"• تخصیص #{item.id}: {toman(item.allocated_rial)}؛ "
+                            f"رسید #{item.payment_id} ← درخواست #{item.request_id}."
+                        )
+                    else:
+                        label = "تصویری" if kind == "failed_image" else "متنی"
+                        lines.append(
+                            f"• ورودی {label} #{item.id}: پردازش ناموفق نهایی؛ "
+                            "اصل ورودی محفوظ است و نیازمند بررسی حسابدار است."
+                        )
             if not selected:
                 lines.append("مورد بازی برای بررسی وجود ندارد.")
             return (
@@ -1054,6 +1184,44 @@ class FinancialWorkflowService:
             .where(ExtractionAttempt.evidence_id == evidence_id)
             .order_by(ExtractionAttempt.attempt_number.desc())
             .limit(1)
+        )
+
+    @staticmethod
+    def _processing_counts(
+        session, group_id: int, start: datetime, end: datetime
+    ) -> ReceiptProcessingCounts:
+        statuses: list[str] = []
+        statuses.extend(
+            session.scalars(
+                select(ReceiptJob.status)
+                .join(TelegramMessage, TelegramMessage.id == ReceiptJob.source_message_id)
+                .where(
+                    ReceiptJob.group_id == group_id,
+                    TelegramMessage.group_id == group_id,
+                    TelegramMessage.occurred_at >= start,
+                    TelegramMessage.occurred_at < end,
+                    ReceiptJob.status.in_(_UNFINISHED_JOB_STATES),
+                )
+            )
+        )
+        statuses.extend(
+            session.scalars(
+                select(TextReceiptJob.status)
+                .join(TelegramMessage, TelegramMessage.id == TextReceiptJob.source_message_id)
+                .where(
+                    TextReceiptJob.group_id == group_id,
+                    TelegramMessage.group_id == group_id,
+                    TelegramMessage.occurred_at >= start,
+                    TelegramMessage.occurred_at < end,
+                    TextReceiptJob.status.in_(_UNFINISHED_JOB_STATES),
+                )
+            )
+        )
+        return ReceiptProcessingCounts(
+            queued=sum(item in {"queued_download", "queued_extraction"} for item in statuses),
+            processing=sum(item in {"downloading", "extracting"} for item in statuses),
+            retrying=sum(item.endswith("_failed_retryable") for item in statuses),
+            failed=sum(item == "failed_final" for item in statuses),
         )
 
     @staticmethod

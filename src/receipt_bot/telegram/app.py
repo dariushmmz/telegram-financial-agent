@@ -60,6 +60,13 @@ async def run_bot(settings: AppSettings, *, stop_event: asyncio.Event | None = N
             storage,
             extraction,
             access_policy=access_policy,
+            retry_base_seconds=settings.receipt_retry_base_seconds,
+            retry_max_seconds=settings.receipt_retry_max_seconds,
+            retry_jitter_ratio=settings.receipt_retry_jitter_ratio,
+            max_download_attempts=settings.receipt_max_download_attempts,
+            max_extraction_attempts=settings.receipt_max_extraction_attempts,
+            provider_cooldown_seconds=settings.receipt_provider_cooldown_seconds,
+            delay_notification_seconds=settings.receipt_delay_notification_seconds,
         )
         service = PollingService(
             database,

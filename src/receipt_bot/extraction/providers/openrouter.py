@@ -21,20 +21,26 @@ from receipt_bot.extraction.errors import (
 )
 from receipt_bot.extraction.image import PreparedImage
 from receipt_bot.extraction.prompt import RECEIPT_PROMPT, TEXT_RECEIPT_PROMPT
-from receipt_bot.extraction.providers.common import RetryPolicy
+from receipt_bot.extraction.providers.common import RetryPolicy, parse_retry_after
 from receipt_bot.extraction.schema import ProviderReceipt, ProviderResult
 
 
 DEFAULT_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 
 
-def map_openrouter_status(status_code: int) -> ProviderError:
+def map_openrouter_status(
+    status_code: int, *, retry_after_seconds: float | None = None
+) -> ProviderError:
     if status_code in (401, 403):
         return ProviderAuthenticationError("OpenRouter authentication failed", status_code=status_code)
     if status_code == 404:
         return ProviderModelUnavailableError("OpenRouter model or endpoint is unavailable", status_code=status_code)
     if status_code == 429:
-        return ProviderRateLimitError("OpenRouter rate limit reached", status_code=status_code)
+        return ProviderRateLimitError(
+            "OpenRouter rate limit reached",
+            status_code=status_code,
+            retry_after_seconds=retry_after_seconds,
+        )
     if status_code in (408, 504):
         return ProviderTimeoutError("OpenRouter request timed out", status_code=status_code)
     if status_code in (500, 502, 503):
@@ -175,7 +181,10 @@ class OpenRouterProvider:
             try:
                 response = self.client.post(self.endpoint, headers=headers, json=payload)
                 if response.status_code >= 400:
-                    raise map_openrouter_status(response.status_code)
+                    raise map_openrouter_status(
+                        response.status_code,
+                        retry_after_seconds=parse_retry_after(response.headers.get("Retry-After")),
+                    )
                 return self._parse_response(response)
             except httpx.TimeoutException as exc:
                 mapped: ProviderError = ProviderTimeoutError("OpenRouter request timed out")

@@ -34,6 +34,14 @@ class AppSettings(BaseSettings):
     telegram_poll_timeout_seconds: int = Field(default=30, ge=1, le=50)
     interaction_ttl_minutes: int = Field(default=15, ge=1, le=120)
     shutdown_grace_seconds: int = Field(default=30, ge=1, le=300)
+    provider_request_timeout_seconds: int = Field(default=45, ge=5, le=300)
+    receipt_max_download_attempts: int = Field(default=3, ge=1, le=20)
+    receipt_max_extraction_attempts: int = Field(default=5, ge=1, le=20)
+    receipt_retry_base_seconds: int = Field(default=30, ge=1, le=3600)
+    receipt_retry_max_seconds: int = Field(default=900, ge=1, le=86400)
+    receipt_retry_jitter_ratio: float = Field(default=0.20, ge=0, le=1)
+    receipt_provider_cooldown_seconds: int = Field(default=60, ge=1, le=3600)
+    receipt_delay_notification_seconds: int = Field(default=300, ge=30, le=86400)
     allowed_telegram_usernames: str
 
     telegram_bot_token: SecretStr | None = Field(default=None, validation_alias="TELEGRAM_BOT_TOKEN")
