@@ -81,7 +81,7 @@ def test_prepare_runtime_migrates_fresh_database_and_healthchecks(tmp_path: Path
     report = prepare_runtime(settings, root=PROJECT_ROOT)
 
     assert report.status == "ok"
-    assert report.revision == report.migration_head == "c4a81e2f9d10"
+    assert report.revision == report.migration_head == "e94b2c8d31f0"
     assert report.integrity == "ok"
     assert report.foreign_key_violations == 0
     assert Path(report.database_path).is_file()
@@ -107,7 +107,7 @@ def test_online_backup_and_separate_restore_preserve_report_fixture(tmp_path: Pa
     backup_path = tmp_path / "backups" / "receipt_bot.sqlite"
     backup = backup_database(settings.database_url, backup_path)
     assert backup.integrity == "ok"
-    assert backup.revision == "c4a81e2f9d10"
+    assert backup.revision == "e94b2c8d31f0"
     assert backup.byte_size > 0
     assert len(backup.sha256) == 64
 

@@ -20,7 +20,7 @@ _MESSAGE_SECRET_PATTERNS = (
     ),
     (
         re.compile(
-            r"\b((?:telegram_bot_token|gemini_api_key|openrouter_api_key|api[_-]?key|password)"
+            r"\b((?:telegram_bot_token|gemini_api_key|openrouter_api_key|onexai_api_key|1xai_api_key|api[_-]?key|password)"
             r"\s*[=:]\s*)[^\s,;]+",
             re.IGNORECASE,
         ),

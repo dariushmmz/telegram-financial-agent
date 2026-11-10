@@ -56,6 +56,7 @@ async def run_bot(settings: AppSettings, *, stop_event: asyncio.Event | None = N
             access_policy=access_policy,
             bot_username=bot_username,
             interaction_ttl_minutes=settings.interaction_ttl_minutes,
+            receipt_max_age_days=settings.receipt_max_age_days,
             storage=storage,
         )
         worker = ReceiptJobWorker(
@@ -71,6 +72,7 @@ async def run_bot(settings: AppSettings, *, stop_event: asyncio.Event | None = N
             max_extraction_attempts=settings.receipt_max_extraction_attempts,
             provider_cooldown_seconds=settings.receipt_provider_cooldown_seconds,
             delay_notification_seconds=settings.receipt_delay_notification_seconds,
+            receipt_max_age_days=settings.receipt_max_age_days,
         )
         service = PollingService(
             database,

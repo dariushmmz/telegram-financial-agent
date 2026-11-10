@@ -1,7 +1,7 @@
-SUPPORT_USERNAME = "@amixrmz"
-SUPPORT_URL = "https://t.me/amixrmz"
+SUPPORT_USERNAME = "@hazer1405"
+SUPPORT_URL = "https://t.me/hazer1405"
 SUPPORT_BUTTON_LABEL = "پشتیبانی ربات"
-SUPPORT_IDENTITY = "پشتیبانی و توسعه‌دهنده ربات: @amixrmz"
+SUPPORT_IDENTITY = "راه ارتباطی پشتیبانی مشتری: @hazer1405"
 
 
 def support_button() -> dict[str, str]:

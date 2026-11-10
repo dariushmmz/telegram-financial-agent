@@ -62,15 +62,16 @@ def handler_for(database, gateway, *user_ids: int) -> TelegramUpdateHandler:
 
 def assert_support_button(message: dict) -> None:
     button = find_button(message["reply_markup"], texts.SUPPORT_BUTTON_LABEL)
-    assert button == {"text": "پشتیبانی ربات", "url": "https://t.me/amixrmz"}
+    assert button == {"text": "پشتیبانی ربات", "url": "https://t.me/hazer1405"}
     assert texts.SUPPORT_USERNAME in message["text"]
 
 
 def test_username_allowlist_accepts_at_prefix_and_is_case_insensitive() -> None:
-    access = TelegramAccessPolicy(frozenset({"amixrmz"}))
+    access = TelegramAccessPolicy(frozenset({"hazer1405"}))
 
-    assert access.allows_user("@AMIXRMZ")
-    assert access.allows_user("amixrmz")
+    assert access.allows_user("@HAZER1405")
+    assert access.allows_user("hazer1405")
+    assert not access.allows_user("amixrmz")
     assert not access.allows_user("different_user")
     assert not access.allows_user(None)
 

@@ -12,7 +12,7 @@ from telegram_fakes import TEST_ACCESS_POLICY, FakeTelegramGateway
 from receipt_bot.cleanup import CleanupConflict, ReceiptCleanupService
 from receipt_bot.domain.enums import CurrencyUnit
 from receipt_bot.domain.money import Money
-from receipt_bot.domain.time import utc_now
+from receipt_bot.domain.time import to_tehran, utc_now
 from receipt_bot.persistence.models import (
     AuditEvent,
     ExtractionAttempt,
@@ -253,11 +253,12 @@ def test_cleanup_deletes_only_file_and_preserves_accounting_records(
                 schema_version="receipt-v3",
                 prompt_version="receipt-fa-v3",
                 status="succeeded",
-                normalized_candidate={
+                    normalized_candidate={
                     "amount_value": 1_000_000,
                     "amount_unit": "rial",
                     "amount_rial": 1_000_000,
-                    "requires_review": False,
+                        "requires_review": False,
+                        "transaction_datetime": to_tehran(now).strftime("%Y/%m/%d %H:%M"),
                 },
                 validation_issues=[],
                 uncertainty={},

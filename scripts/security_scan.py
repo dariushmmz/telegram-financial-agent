@@ -23,6 +23,7 @@ TEXT_SUFFIXES = {".py", ".toml", ".ini", ".yaml", ".yml", ".example"}
 CREDENTIAL_PATTERNS = {
     "google_api_key": re.compile(r"\bAIza[0-9A-Za-z_-]{30,}\b"),
     "openrouter_key": re.compile(r"\bsk-or-v1-[0-9A-Za-z_-]{20,}\b"),
+    "onexai_key": re.compile(r"\b1xai-[0-9A-Za-z_-]{16,}\b"),
     "telegram_bot_token": re.compile(r"\b\d{6,12}:[0-9A-Za-z_-]{30,}\b"),
     "private_key": re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
 }

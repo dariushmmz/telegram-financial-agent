@@ -13,6 +13,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from receipt_bot.extraction.errors import ExtractionError
 from receipt_bot.extraction.providers.gemini import GeminiProvider
+from receipt_bot.extraction.providers.onexai import OneXAIProvider
 from receipt_bot.extraction.providers.openrouter import OpenRouterProvider
 from receipt_bot.extraction.service import ExtractionService
 
@@ -21,7 +22,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Make one explicitly authorized live extraction call and print a non-financial summary"
     )
-    parser.add_argument("provider", choices=("gemini", "openrouter"))
+    parser.add_argument("provider", choices=("gemini", "openrouter", "1xai"))
     parser.add_argument("model", help="Current vision-capable provider model ID")
     parser.add_argument("image", type=Path, help="Synthetic or explicitly authorized JPG/PNG/WebP")
     args = parser.parse_args()
@@ -31,11 +32,16 @@ def main() -> None:
         if not key:
             raise SystemExit("GEMINI_API_KEY is required")
         provider = GeminiProvider(api_key=key, models=[args.model])
-    else:
+    elif args.provider == "openrouter":
         key = os.getenv("OPENROUTER_API_KEY")
         if not key:
             raise SystemExit("OPENROUTER_API_KEY is required")
         provider = OpenRouterProvider(api_key=key, model=args.model)
+    else:
+        key = os.getenv("ONEXAI_API_KEY") or os.getenv("1xai_API_KEY")
+        if not key:
+            raise SystemExit("ONEXAI_API_KEY (or legacy 1xai_API_KEY) is required")
+        provider = OneXAIProvider(api_key=key, model=args.model)
 
     try:
         outcome = ExtractionService(provider).extract(

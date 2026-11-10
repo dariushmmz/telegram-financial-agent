@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
@@ -10,13 +11,15 @@ from receipt_bot.domain.enums import (
     AllocationState,
     CurrencyUnit,
     PaymentEvidenceState,
+    PaymentDateState,
     PromiseState,
     RequestState,
     ReviewDecision,
     SettlementState,
 )
 from receipt_bot.domain.money import Money
-from receipt_bot.domain.time import require_aware
+from receipt_bot.domain.receipt_date import assess_receipt_date
+from receipt_bot.domain.time import require_aware, utc_now
 from receipt_bot.persistence.models import (
     Counterparty,
     ExtractionAttempt,
@@ -36,6 +39,15 @@ ACTIVE_ALLOCATION_STATES = {
     AllocationState.PROPOSED.value,
     AllocationState.CONFIRMED.value,
 }
+COUNTABLE_DATE_STATES = {
+    PaymentDateState.VALID.value,
+    PaymentDateState.APPROVED_EXCEPTION.value,
+    PaymentDateState.LEGACY_UNASSESSED.value,
+}
+
+
+def payment_date_is_eligible(payment: Payment) -> bool:
+    return payment.date_eligibility_state in COUNTABLE_DATE_STATES
 
 
 class LedgerError(ValueError):
@@ -70,10 +82,19 @@ def _snapshot(item: Any) -> dict[str, Any]:
 class LedgerService:
     """Group-scoped deterministic ledger mutations within the caller's transaction."""
 
-    def __init__(self, session: Session, group_id: int) -> None:
+    def __init__(
+        self,
+        session: Session,
+        group_id: int,
+        *,
+        receipt_max_age_days: int = 30,
+        now_factory: Callable[[], datetime] = utc_now,
+    ) -> None:
         self.session = session
         self.group_id = group_id
         self.history = HistoryRepository(session, group_id)
+        self.receipt_max_age_days = receipt_max_age_days
+        self.now_factory = now_factory
 
     def _get(self, model, item_id: int):
         item = self.session.scalar(
@@ -215,6 +236,12 @@ class LedgerService:
         actor_user_id: int | None = None,
         state: RequestState = RequestState.OPEN,
         reason: str = "initial",
+        account_holder_name: str | None = None,
+        destination_account: str | None = None,
+        destination_card: str | None = None,
+        destination_iban: str | None = None,
+        destination_bank: str | None = None,
+        source_parser_candidate: dict[str, Any] | None = None,
     ) -> PaymentRequest:
         self._get(Counterparty, counterparty_id)
         self._source_message(source_message_id)
@@ -235,6 +262,12 @@ class LedgerService:
             state=state.value,
             created_by_user_id=actor_user_id,
             revision_number=1,
+            account_holder_name=account_holder_name,
+            destination_account=destination_account,
+            destination_card=destination_card,
+            destination_iban=destination_iban,
+            destination_bank=destination_bank,
+            source_parser_candidate=source_parser_candidate,
         )
         self.session.add(item)
         self.session.flush()
@@ -254,6 +287,7 @@ class LedgerService:
         duplicate_of_payment_id: int | None = None,
         actor_user_id: int | None = None,
         recorded_at: datetime | None = None,
+        assess_date: bool = False,
     ) -> Payment:
         self._actor(actor_user_id)
         receipt_id: int | None = None
@@ -290,6 +324,17 @@ class LedgerService:
             settlement_state=SettlementState.NOT_CHECKED.value,
             revision_number=1,
         )
+        if assess_date:
+            assessment = assess_receipt_date(
+                printed_transaction_at,
+                now=self.now_factory(),
+                max_age_days=self.receipt_max_age_days,
+            )
+            item.parsed_transaction_at = assessment.parsed
+            item.transaction_calendar = assessment.calendar
+            item.date_eligibility_state = assessment.state.value
+            item.date_assessed_at = self.now_factory()
+            item.date_max_age_days = assessment.max_age_days
         if recorded_at is not None:
             require_aware(recorded_at)
             item.created_at = recorded_at
@@ -363,6 +408,7 @@ class LedgerService:
             duplicate_of_payment_id=duplicate_payment.id if duplicate_payment else None,
             actor_user_id=actor_user_id,
             recorded_at=recorded_at,
+            assess_date=True,
         )
 
     def materialize_unrecorded_extractions(self) -> int:
@@ -471,6 +517,8 @@ class LedgerService:
             raise LedgerConflict("cannot allocate to a closed or cancelled request")
         if payment.evidence_state in {PaymentEvidenceState.DUPLICATE.value, PaymentEvidenceState.REJECTED.value}:
             raise LedgerConflict("duplicate or rejected payment cannot be allocated")
+        if not payment_date_is_eligible(payment):
+            raise LedgerConflict("payment transaction date requires accounting approval")
         if request.amount_rial is None or payment.amount_rial is None:
             raise LedgerConflict("unknown-unit amounts cannot be allocated")
         if payment.counterparty_id is not None and payment.counterparty_id != request.counterparty_id:
@@ -534,7 +582,18 @@ class LedgerService:
                 raise LedgerConflict("corrected counterparty conflicts with active allocations")
             payment.counterparty_id = counterparty_id
         if printed_transaction_at is not None:
-            payment.printed_transaction_at = printed_transaction_at
+            corrected = " ".join(printed_transaction_at.split())
+            assessment = assess_receipt_date(
+                corrected,
+                now=self.now_factory(),
+                max_age_days=self.receipt_max_age_days,
+            )
+            payment.corrected_transaction_at = corrected
+            payment.parsed_transaction_at = assessment.parsed
+            payment.transaction_calendar = assessment.calendar
+            payment.date_eligibility_state = assessment.state.value
+            payment.date_assessed_at = self.now_factory()
+            payment.date_max_age_days = assessment.max_age_days
         if transaction_reference is not None:
             payment.transaction_reference = transaction_reference
         payment.evidence_state = PaymentEvidenceState.CONFIRMED.value
@@ -548,6 +607,125 @@ class LedgerService:
             actor_user_id=reviewer_user_id,
             decision=ReviewDecision.CORRECTED,
             comment=reason,
+        )
+        return payment
+
+    def approve_payment_date(
+        self,
+        payment_id: int,
+        *,
+        reviewer_user_id: int,
+        reason: str,
+    ) -> Payment:
+        self._actor(reviewer_user_id)
+        payment = self._get(Payment, payment_id)
+        if payment.date_eligibility_state == PaymentDateState.APPROVED_EXCEPTION.value:
+            return payment
+        if payment.date_eligibility_state in {
+            PaymentDateState.VALID.value,
+            PaymentDateState.LEGACY_UNASSESSED.value,
+        }:
+            raise LedgerConflict("payment date does not require exception approval")
+        payment.date_eligibility_state = PaymentDateState.APPROVED_EXCEPTION.value
+        payment.date_assessed_at = self.now_factory()
+        payment.date_max_age_days = self.receipt_max_age_days
+        payment.revision_number += 1
+        self.session.flush()
+        self._append_change(
+            target_type="payment",
+            item=payment,
+            reason=f"date exception approved: {reason}",
+            actor_user_id=reviewer_user_id,
+            decision=ReviewDecision.CONFIRMED,
+            comment=reason,
+        )
+        self.history.append_audit(
+            action="payment.date_approved",
+            target_type="payment",
+            target_id=payment.id,
+            metadata={"date_state": payment.date_eligibility_state},
+            actor_user_id=reviewer_user_id,
+        )
+        return payment
+
+    def reject_payment_date(
+        self,
+        payment_id: int,
+        *,
+        reviewer_user_id: int,
+        reason: str,
+    ) -> Payment:
+        self._actor(reviewer_user_id)
+        payment = self._get(Payment, payment_id)
+        if payment.date_eligibility_state == PaymentDateState.REJECTED.value:
+            return payment
+        payment.date_eligibility_state = PaymentDateState.REJECTED.value
+        payment.date_assessed_at = self.now_factory()
+        payment.date_max_age_days = self.receipt_max_age_days
+        payment.revision_number += 1
+        self.session.flush()
+        self._append_change(
+            target_type="payment",
+            item=payment,
+            reason=f"date rejected: {reason}",
+            actor_user_id=reviewer_user_id,
+            decision=ReviewDecision.REJECTED,
+            comment=reason,
+        )
+        self.history.append_audit(
+            action="payment.date_rejected",
+            target_type="payment",
+            target_id=payment.id,
+            metadata={"date_state": payment.date_eligibility_state},
+            actor_user_id=reviewer_user_id,
+        )
+        return payment
+
+    def correct_payment_date(
+        self,
+        payment_id: int,
+        *,
+        corrected_transaction_at: str,
+        reviewer_user_id: int,
+        reason: str,
+    ) -> Payment:
+        self._actor(reviewer_user_id)
+        payment = self._get(Payment, payment_id)
+        corrected = " ".join(corrected_transaction_at.split())
+        if not corrected:
+            raise LedgerConflict("corrected transaction date is required")
+        assessment = assess_receipt_date(
+            corrected,
+            now=self.now_factory(),
+            max_age_days=self.receipt_max_age_days,
+        )
+        if (
+            payment.corrected_transaction_at == corrected
+            and payment.date_eligibility_state == assessment.state.value
+        ):
+            return payment
+        payment.corrected_transaction_at = corrected
+        payment.parsed_transaction_at = assessment.parsed
+        payment.transaction_calendar = assessment.calendar
+        payment.date_eligibility_state = assessment.state.value
+        payment.date_assessed_at = self.now_factory()
+        payment.date_max_age_days = assessment.max_age_days
+        payment.revision_number += 1
+        self.session.flush()
+        self._append_change(
+            target_type="payment",
+            item=payment,
+            reason=f"transaction date corrected: {reason}",
+            actor_user_id=reviewer_user_id,
+            decision=ReviewDecision.CORRECTED,
+            comment=reason,
+        )
+        self.history.append_audit(
+            action="payment.date_corrected",
+            target_type="payment",
+            target_id=payment.id,
+            metadata={"date_state": payment.date_eligibility_state},
+            actor_user_id=reviewer_user_id,
         )
         return payment
 
@@ -724,6 +902,8 @@ class LedgerService:
             raise LedgerConflict("only proposed allocations can be confirmed")
         if payment.evidence_state != PaymentEvidenceState.CONFIRMED.value:
             raise LedgerConflict("payment evidence must be confirmed first")
+        if not payment_date_is_eligible(payment):
+            raise LedgerConflict("payment transaction date requires accounting approval")
         if payment.counterparty_id not in {None, request.counterparty_id}:
             raise LedgerConflict("payment and request counterparties differ")
         if payment.counterparty_id is None:
@@ -888,6 +1068,8 @@ class LedgerService:
     ) -> Payment:
         self._actor(reviewer_user_id)
         payment = self._get(Payment, payment_id)
+        if not payment_date_is_eligible(payment):
+            raise LedgerConflict("payment transaction date requires accounting approval")
         if payment.evidence_state != PaymentEvidenceState.CONFIRMED.value:
             raise LedgerConflict("accounting evidence must be confirmed before external settlement")
         payment.settlement_state = SettlementState.EXTERNALLY_CONFIRMED.value

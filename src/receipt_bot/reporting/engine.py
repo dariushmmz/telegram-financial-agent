@@ -26,7 +26,11 @@ from receipt_bot.persistence.models import (
     TelegramMessage,
     TelegramUser,
 )
-from receipt_bot.reconciliation.service import ACTIVE_ALLOCATION_STATES, LedgerNotFound
+from receipt_bot.reconciliation.service import (
+    ACTIVE_ALLOCATION_STATES,
+    LedgerNotFound,
+    payment_date_is_eligible,
+)
 from receipt_bot.reporting.models import (
     PromiseReportLine,
     ReportExclusion,
@@ -38,7 +42,7 @@ from receipt_bot.reporting.models import (
 )
 
 
-CALCULATION_VERSION = "reconciliation-v2"
+CALCULATION_VERSION = "reconciliation-v3"
 COUNTABLE_PAYMENT_STATES = {
     PaymentEvidenceState.SUBMITTED.value,
     PaymentEvidenceState.NEEDS_REVIEW.value,
@@ -199,7 +203,15 @@ class ReportingEngine:
                 revision_ids.append(request_revision)
 
             allocations = self._active_allocations_for_request(request.id)
-            request_allocated_total = sum(item.allocated_rial for item in allocations)
+            request_allocated_total = sum(
+                item.allocated_rial
+                for item in allocations
+                if (
+                    (allocated_payment := self.session.get(Payment, item.payment_id))
+                    is not None
+                    and payment_date_is_eligible(allocated_payment)
+                )
+            )
             if request.amount_rial is not None and request_allocated_total > request.amount_rial:
                 comparable = False
                 warnings.append("allocation_total_exceeds_request")
@@ -231,6 +243,17 @@ class ReportingEngine:
                     warnings.append(f"payment_{payment.evidence_state}")
                     exclude(
                         f"payment_{payment.evidence_state}",
+                        "payment",
+                        payment.id,
+                        payment.amount_rial,
+                        payment.source_message_id,
+                    )
+                    continue
+                if not payment_date_is_eligible(payment):
+                    warning = f"payment_date_{payment.date_eligibility_state}"
+                    warnings.append(warning)
+                    exclude(
+                        warning,
                         "payment",
                         payment.id,
                         payment.amount_rial,
@@ -333,6 +356,15 @@ class ReportingEngine:
             if payment.evidence_state not in COUNTABLE_PAYMENT_STATES:
                 exclude(
                     f"payment_{payment.evidence_state}",
+                    "payment",
+                    payment.id,
+                    payment.amount_rial,
+                    payment.source_message_id,
+                )
+                continue
+            if not payment_date_is_eligible(payment):
+                exclude(
+                    f"payment_date_{payment.date_eligibility_state}",
                     "payment",
                     payment.id,
                     payment.amount_rial,

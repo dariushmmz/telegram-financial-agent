@@ -36,6 +36,8 @@ An allowlisted Telegram username can activate a group with `/start` only while t
 
 The bot accepts JPEG, PNG, and WebP receipt images as well as receipt text. It normalizes Persian and English digits, keeps rial and toman distinct, and marks unreadable or ambiguous fields for review.
 
+New receipts are also checked against their printed transaction date in the `Asia/Tehran` calendar. The default maximum age is 30 calendar days and can be changed with `RECEIPT_BOT_RECEIPT_MAX_AGE_DAYS`. A receipt exactly 30 days old remains eligible; older, future, or unreadable dates stay visible but do not affect totals or balances until an accountant explicitly approves or corrects the date.
+
 | Command | What it does | Who can use it |
 |---|---|---|
 | `/start` | Activates an approved group or completes a private handoff | Allowlisted current group administrator |
@@ -54,7 +56,7 @@ The bot accepts JPEG, PNG, and WebP receipt images as well as receipt text. It n
 
 Inline buttons handle dates, pagination, record selection, correction, and confirmation. Where private handoff is available, sensitive details can be opened in a direct conversation instead of the public group.
 
-The `پشتیبانی ربات` button opens [@amixrmz](https://t.me/amixrmz), the support contact and developer. It is also available on access-denied screens.
+The `پشتیبانی ربات` button opens [@hazer1405](https://t.me/hazer1405), the client support contact. It is also available on access-denied screens.
 
 ## Financial rules
 
@@ -98,7 +100,9 @@ GEMINI_API_KEY=replace-with-your-google-ai-studio-key
 
 The username allowlist is comma-separated and case-insensitive. A leading `@` is optional. Configuration fails closed when the list is missing, empty, malformed, or contains duplicates.
 
-For OpenRouter, set `RECEIPT_BOT_EXTRACTION_PROVIDER=openrouter` and provide `OPENROUTER_API_KEY`. Do not place real credentials in source files, screenshots, command arguments, or Git history.
+For OpenRouter, set `RECEIPT_BOT_EXTRACTION_PROVIDER=openrouter` and provide `OPENROUTER_API_KEY`.
+
+For 1xAi, set `RECEIPT_BOT_EXTRACTION_PROVIDER=1xai`, choose a current vision-capable model with `RECEIPT_BOT_ONEXAI_MODEL`, and provide `ONEXAI_API_KEY`. Local dotenv files also accept the legacy name `1xai_API_KEY`; deployment environments should use `ONEXAI_API_KEY`. The adapter uses 1xAi's native Gemini passthrough at `https://1xai.ir/gemini/v1beta` so image and structured-output behavior follows the Gemini request contract. Do not place real credentials in source files, screenshots, command arguments, or Git history.
 
 Prepare the SQLite database and start long polling:
 
@@ -207,7 +211,7 @@ The current deliverable is not presented as an already-running production servic
 ## Client guide and support
 
 - [راهنمای فارسی مشتری (PDF)](docs/client-user-guide.fa.pdf)
-- [Telegram support: @amixrmz](https://t.me/amixrmz)
+- [Telegram support: @hazer1405](https://t.me/hazer1405)
 
 ## License
 

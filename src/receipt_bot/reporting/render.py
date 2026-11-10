@@ -89,6 +89,11 @@ def render_persian_report(report: ReportProjection) -> str:
         lines.append(
             f"⚠️ {str(totals.unresolved_count).translate(_PERSIAN_DIGITS)} مورد حل‌نشده یا مستثنا وجود دارد."
         )
+    date_exclusions = [item for item in report.exclusions if item.code.startswith("payment_date_")]
+    if date_exclusions:
+        lines.append(
+            f"⚠️ {str(len(date_exclusions)).translate(_PERSIAN_DIGITS)} رسید به‌دلیل تاریخ قدیمی، آینده یا نامعتبر از جمع‌ها کنار گذاشته شده است و تا تأیید حسابدار روی مانده اثر ندارد."
+        )
     lines.extend(
         [
             "",

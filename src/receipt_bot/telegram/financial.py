@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
+import re
 from typing import Any
 
 from sqlalchemy import func, or_, select
@@ -10,6 +11,7 @@ from receipt_bot.domain.enums import (
     AllocationState,
     CurrencyUnit,
     PaymentEvidenceState,
+    PaymentDateState,
     ReviewDecision,
 )
 from receipt_bot.domain.money import (
@@ -17,6 +19,10 @@ from receipt_bot.domain.money import (
     format_rial_as_toman,
     normalize_digits,
     parse_integer,
+)
+from receipt_bot.domain.request_parser import (
+    normalize_request_identifier,
+    parse_request_announcement,
 )
 from receipt_bot.domain.time import TEHRAN, UTC, to_tehran, utc_now
 from receipt_bot.persistence.database import Database
@@ -37,6 +43,7 @@ from receipt_bot.persistence.models import (
 )
 from receipt_bot.persistence.repositories import InteractionRepository
 from receipt_bot.reconciliation import LedgerService
+from receipt_bot.reconciliation.service import COUNTABLE_DATE_STATES, payment_date_is_eligible
 from receipt_bot.reporting import ReportingEngine, render_persian_report
 
 PAGE_SIZE = 5
@@ -57,6 +64,15 @@ _PAYMENT_STATES = {
     "confirmed": "تأیید حسابداری",
     "rejected": "ردشده",
     "duplicate": "تکراری",
+}
+_DATE_STATES = {
+    "valid": "تاریخ معتبر و قابل محاسبه",
+    "needs_review_old": "تاریخ قدیمی؛ تا تأیید حسابدار از جمع‌ها خارج است",
+    "needs_review_future": "تاریخ آینده؛ تا تأیید حسابدار از جمع‌ها خارج است",
+    "needs_review_unknown": "تاریخ نامشخص/نامعتبر؛ تا تأیید حسابدار از جمع‌ها خارج است",
+    "approved_exception": "استثنای تاریخ با تأیید حسابدار",
+    "rejected": "تاریخ ردشده؛ از جمع‌ها خارج است",
+    "legacy_unassessed": "سابقه قدیمی؛ بدون بازطبقه‌بندی",
 }
 _ALLOCATION_STATES = {
     "proposed": "پیشنهادی",
@@ -209,6 +225,69 @@ def parse_money_and_reason(text: str | None) -> tuple[Money, str]:
     return money, parse_reason(reason_text)
 
 
+def parse_date_and_reason(text: str | None) -> tuple[str, str]:
+    raw = (text or "").strip()
+    parts = raw.split("|", 1)
+    if len(parts) != 2:
+        raise FinancialInputError("تاریخ و دلیل را با علامت | جدا کنید.")
+    date_text, reason_text = (part.strip() for part in parts)
+    if not date_text or len(date_text) > 128:
+        raise FinancialInputError("تاریخ اصلاح‌شده معتبر نیست.")
+    return date_text, parse_reason(reason_text)
+
+
+def parse_request_review_input(text: str | None) -> dict[str, Any]:
+    raw = (text or "").strip()
+    parts = [part.strip() for part in raw.split("|", 3)]
+    if len(parts) != 4:
+        raise FinancialInputError(
+            "مبلغ، نام صاحب حساب، مشخصات حساب و دلیل را با | جدا کنید."
+        )
+    money_text, holder, details_text, reason_text = parts
+    money, _ = parse_money_and_reason(f"{money_text} | {reason_text}")
+    holder = " ".join(holder.split())
+    if not 2 <= len(holder) <= 255:
+        raise FinancialInputError("نام صاحب حساب باید روشن و قابل بررسی باشد.")
+    details: dict[str, str | None] = {
+        "destination_iban": None,
+        "destination_card": None,
+        "destination_account": None,
+        "destination_bank": None,
+    }
+    labels = {
+        "شبا": "destination_iban",
+        "iban": "destination_iban",
+        "کارت": "destination_card",
+        "card": "destination_card",
+        "حساب": "destination_account",
+        "account": "destination_account",
+        "بانک": "destination_bank",
+        "bank": "destination_bank",
+    }
+    for segment in re.split(r"[؛;]", details_text):
+        if not segment.strip():
+            continue
+        if ":" not in segment:
+            raise FinancialInputError("نوع مشخصات حساب را مانند شبا: یا کارت: بنویسید.")
+        label, value = (item.strip() for item in segment.split(":", 1))
+        field = labels.get(label.casefold())
+        if field is None or details[field] is not None:
+            raise FinancialInputError("نوع مشخصات حساب ناشناخته یا تکراری است.")
+        try:
+            details[field] = normalize_request_identifier(label, value)
+        except ValueError as exc:
+            raise FinancialInputError("شماره حساب، کارت یا شبا معتبر نیست.") from exc
+    if not any(details[key] for key in ("destination_iban", "destination_card", "destination_account")):
+        raise FinancialInputError("حداقل یک شماره شبا، کارت یا حساب معتبر لازم است.")
+    return {
+        "amount_value": money.value,
+        "amount_unit": money.unit.value,
+        "account_holder": holder,
+        **details,
+        "reason": parse_reason(reason_text),
+    }
+
+
 def toman(rial: int | None) -> str:
     if rial is None:
         return "نامشخص"
@@ -243,8 +322,9 @@ def split_telegram_text(text: str, *, limit: int = 3900) -> list[str]:
 
 
 class FinancialWorkflowService:
-    def __init__(self, database: Database) -> None:
+    def __init__(self, database: Database, *, receipt_max_age_days: int = 30) -> None:
         self.database = database
+        self.receipt_max_age_days = receipt_max_age_days
 
     @staticmethod
     def _group(session, group_id: int) -> TelegramGroup:
@@ -334,6 +414,16 @@ class FinancialWorkflowService:
             warning = self._processing_counts(session, group_id, start, end).warning()
         if warning:
             lines.extend(["", warning])
+        date_exclusions = [
+            item for item in report.exclusions if item.code.startswith("payment_date_")
+        ]
+        if date_exclusions:
+            lines.extend(
+                [
+                    "",
+                    f"⚠️ {len(date_exclusions)} رسید به‌دلیل تاریخ قدیمی، آینده یا نامعتبر در جمع‌ها منظور نشده است.",
+                ]
+            )
         return "\n".join(lines).translate(_PERSIAN_DIGITS)
 
     def capture_source(
@@ -375,12 +465,69 @@ class FinancialWorkflowService:
             sender = session.get(TelegramUser, source.sender_user_id)
             if sender is None:
                 raise FinancialInputError("فرستنده پیام اصلی در سوابق کاربران وجود ندارد.")
-            return {
+            state: dict[str, Any] = {
                 "operation": operation,
                 "source_message_id": source.id,
                 "source_sender_user_id": sender.id,
                 "source_sender_name": sender.display_name,
             }
+            if operation == "request_create":
+                candidate = parse_request_announcement(source.text)
+                parsed = candidate.as_state()
+                state.update(parsed)
+                state["source_parser_candidate"] = parsed
+                state["request_prefill_complete"] = candidate.complete_for_request
+                state["request_manual_legacy"] = not any(
+                    (
+                        candidate.amount_value,
+                        candidate.account_holder,
+                        candidate.destination_iban,
+                        candidate.destination_card,
+                        candidate.destination_account,
+                        candidate.ambiguous_fields,
+                    )
+                )
+            return state
+
+    @staticmethod
+    def _masked(value: str | None) -> str:
+        if not value:
+            return "شناسایی نشد"
+        compact = value.replace(" ", "")
+        return ("*" * max(len(compact) - 4, 4)) + compact[-4:]
+
+    @classmethod
+    def request_prefill_preview(cls, state: dict[str, Any]) -> str:
+        amount = None
+        if state.get("amount_value") is not None:
+            try:
+                amount = Money(
+                    int(state["amount_value"]),
+                    CurrencyUnit(str(state.get("amount_unit", "unknown"))),
+                )
+            except (TypeError, ValueError):
+                amount = None
+        details = next(
+            (
+                cls._masked(str(state[key]))
+                for key in ("destination_iban", "destination_card", "destination_account")
+                if state.get(key)
+            ),
+            "شناسایی نشد",
+        )
+        ambiguous = state.get("ambiguous_fields") or []
+        lines = [
+            "پیش‌نمایش درخواست استخراج‌شده",
+            f"مبلغ: {toman(amount.canonical_rial) if amount else 'نامشخص/مبهم'}",
+            f"صاحب حساب: {state.get('account_holder') or 'نامشخص/مبهم'}",
+            f"مشخصات حساب: {details}",
+            f"بانک: {state.get('destination_bank') or 'شناسایی نشد'}",
+            f"فرستنده پیام: {state.get('source_sender_name') or 'نامشخص'} (صرفاً منبع پیام)",
+        ]
+        if ambiguous:
+            lines.append("⚠️ بعضی فیلدها چند مقدار محتمل دارند و باید اصلاح شوند.")
+        lines.append("شماره کامل حساب در گروه نمایش داده نمی‌شود.")
+        return "\n".join(lines).translate(_PERSIAN_DIGITS)
 
     def receipts(self, group_id: int, period: Period, page: int = 0) -> tuple[str, list[int], bool, bool]:
         start, end = period.utc_bounds
@@ -438,7 +585,7 @@ class FinancialWorkflowService:
                         f"• رسید #{payment.id} ({kind}): {toman(payment.amount_rial)}؛ "
                         f"{self._payment_identity_label(party, sender)}؛ "
                         f"وضعیت {_PAYMENT_STATES.get(payment.evidence_state, payment.evidence_state)}؛ "
-                        f"پردازش ثبت‌شده؛ تصویر {storage}."
+                        f"پردازش ثبت‌شده؛ تاریخ {_DATE_STATES.get(payment.date_eligibility_state, payment.date_eligibility_state)}؛ تصویر {storage}."
                     )
                     continue
                 _message, image_job, text_job, _evidence, payment = entry
@@ -463,7 +610,7 @@ class FinancialWorkflowService:
                     f"• رسید #{payment.id} ({kind}): {toman(payment.amount_rial)}؛ "
                     f"{self._payment_identity_label(party, sender)}؛ "
                     f"وضعیت {_PAYMENT_STATES.get(payment.evidence_state, payment.evidence_state)}؛ "
-                    f"پردازش {state}؛ تصویر {storage}."
+                    f"پردازش {state}؛ تاریخ {_DATE_STATES.get(payment.date_eligibility_state, payment.date_eligibility_state)}؛ تصویر {storage}."
                 )
             if not rows:
                 lines.append("موردی در این بازه ثبت نشده است.")
@@ -477,7 +624,16 @@ class FinancialWorkflowService:
                     select(Payment)
                     .where(
                         Payment.group_id == group_id,
-                        Payment.evidence_state.in_(["submitted", "needs_review"]),
+                        or_(
+                            Payment.evidence_state.in_(["submitted", "needs_review"]),
+                            Payment.date_eligibility_state.in_(
+                                [
+                                    PaymentDateState.NEEDS_REVIEW_OLD.value,
+                                    PaymentDateState.NEEDS_REVIEW_FUTURE.value,
+                                    PaymentDateState.NEEDS_REVIEW_UNKNOWN.value,
+                                ]
+                            ),
+                        ),
                     )
                     .order_by(Payment.created_at, Payment.id)
                 )
@@ -526,7 +682,8 @@ class FinancialWorkflowService:
                 if kind == "payment":
                     lines.append(
                         f"• رسید #{item.id}: {toman(item.amount_rial)}؛ "
-                        f"{_PAYMENT_STATES.get(item.evidence_state, item.evidence_state)}."
+                        f"{_PAYMENT_STATES.get(item.evidence_state, item.evidence_state)}؛ "
+                        f"{_DATE_STATES.get(item.date_eligibility_state, item.date_eligibility_state)}."
                     )
                 else:
                     if kind == "allocation":
@@ -706,7 +863,12 @@ class FinancialWorkflowService:
             confirmed = 0
             for allocation in allocations:
                 payment = session.get(Payment, allocation.payment_id)
-                if payment is None or payment.group_id != group_id or payment.evidence_state not in COUNTABLE_PAYMENT_STATES:
+                if (
+                    payment is None
+                    or payment.group_id != group_id
+                    or payment.evidence_state not in COUNTABLE_PAYMENT_STATES
+                    or not payment_date_is_eligible(payment)
+                ):
                     continue
                 submitted += allocation.allocated_rial
                 if payment.evidence_state == "confirmed" and allocation.state == "confirmed":
@@ -717,6 +879,7 @@ class FinancialWorkflowService:
                         Payment.group_id == group_id,
                         Payment.counterparty_id == counterparty_id,
                         Payment.evidence_state.in_(COUNTABLE_PAYMENT_STATES),
+                        Payment.date_eligibility_state.in_(COUNTABLE_DATE_STATES),
                         Payment.amount_rial.is_not(None),
                         ~Payment.id.in_(
                             select(RequestPaymentAllocation.payment_id).where(
@@ -740,6 +903,16 @@ class FinancialWorkflowService:
                 )
                 or 0
             )
+            excluded_date_count = int(
+                session.scalar(
+                    select(func.count(Payment.id)).where(
+                        Payment.group_id == group_id,
+                        Payment.counterparty_id == counterparty_id,
+                        Payment.date_eligibility_state.not_in(COUNTABLE_DATE_STATES),
+                    )
+                )
+                or 0
+            )
         lines = [
             f"وضعیت ثبت‌شده برای {party.display_name}",
             f"جمع درخواست‌های قابل مقایسه: {toman(requested)}",
@@ -752,6 +925,10 @@ class FinancialWorkflowService:
         ]
         if unknown_count:
             lines.append(f"⚠️ {unknown_count} درخواست مبلغ/واحد قابل اتکا ندارد.")
+        if excluded_date_count:
+            lines.append(
+                f"⚠️ {excluded_date_count} رسید به‌دلیل وضعیت تاریخ در این مانده محاسبه نشده است."
+            )
         lines.extend(
             [
                 "",
@@ -789,6 +966,7 @@ class FinancialWorkflowService:
                 f"پرداخت‌کننده: {party.display_name if party else 'تعیین‌نشده'}",
                 f"فرستنده تلگرام: {sender.display_name if sender else 'نامشخص'}",
                 f"وضعیت سند: {_PAYMENT_STATES.get(payment.evidence_state, payment.evidence_state)}",
+                f"وضعیت تاریخ: {_DATE_STATES.get(payment.date_eligibility_state, payment.date_eligibility_state)}",
                 f"وضعیت وصول مستقل: {payment.settlement_state}",
                 f"تخصیص فعال: {toman(allocated)}",
                 f"نوع مدرک: {evidence.evidence_kind if evidence else 'manual'}",
@@ -802,6 +980,7 @@ class FinancialWorkflowService:
                 lines.extend(
                     [
                         f"تاریخ چاپ‌شده: {payment.printed_transaction_at or 'نامشخص'}",
+                        f"تاریخ اصلاح‌شده: {payment.corrected_transaction_at or 'ندارد'}",
                         f"مرجع تراکنش: {payment.transaction_reference or 'نامشخص'}",
                     ]
                 )
@@ -830,6 +1009,17 @@ class FinancialWorkflowService:
         rendered = "\n".join(lines)
         return rendered if private else rendered.translate(_PERSIAN_DIGITS)
 
+    def payment_date_state(self, group_id: int, payment_id: int) -> str:
+        with self.database.session() as session:
+            state = session.scalar(
+                select(Payment.date_eligibility_state).where(
+                    Payment.id == payment_id, Payment.group_id == group_id
+                )
+            )
+            if state is None:
+                raise LookupError("payment not found")
+            return state
+
     def allocation_detail(self, group_id: int, allocation_id: int) -> str:
         with self.database.session() as session:
             item = session.scalar(
@@ -852,7 +1042,7 @@ class FinancialWorkflowService:
             payment = session.scalar(
                 select(Payment).where(Payment.id == payment_id, Payment.group_id == group_id)
             )
-            if payment is None or payment.amount_rial is None:
+            if payment is None or payment.amount_rial is None or not payment_date_is_eligible(payment):
                 return []
             allocated_payment = self._allocated_for_payment(session, group_id, payment.id)
             payment_remaining = payment.amount_rial - allocated_payment
@@ -931,7 +1121,11 @@ class FinancialWorkflowService:
                 raise FinancialInputError("اطلاعات عملیات هنوز کامل نشده است.")
             operation = str(state.get("operation"))
             reason = parse_reason(state.get("reason"))
-            ledger = LedgerService(session, group_id)
+            ledger = LedgerService(
+                session,
+                group_id,
+                receipt_max_age_days=self.receipt_max_age_days,
+            )
             if operation in {"request_create", "promise_create"}:
                 source = session.scalar(
                     select(TelegramMessage).where(
@@ -956,24 +1150,44 @@ class FinancialWorkflowService:
                 )
                 if existing_request is not None or existing_promise is not None:
                     raise FinancialInputError("این پیام قبلاً ثبت مالی شده است.")
-                counterparty = session.scalar(
-                    select(Counterparty).where(
-                        Counterparty.group_id == group_id,
-                        Counterparty.telegram_user_id == sender.id,
-                        Counterparty.active.is_(True),
-                    )
-                )
-                if counterparty is None:
-                    counterparty = ledger.add_counterparty(
-                        sender.display_name,
-                        aliases=[sender.username] if sender.username else None,
-                        telegram_user_id=sender.id,
-                    )
                 money = Money(
                     int(state["amount_value"]),
                     CurrencyUnit(str(state["amount_unit"])),
                 )
                 if operation == "request_create":
+                    holder = " ".join(str(state.get("account_holder") or "").split())
+                    if state.get("request_manual_legacy"):
+                        counterparty = session.scalar(
+                            select(Counterparty).where(
+                                Counterparty.group_id == group_id,
+                                Counterparty.telegram_user_id == sender.id,
+                                Counterparty.active.is_(True),
+                            )
+                        )
+                        if counterparty is None:
+                            counterparty = ledger.add_counterparty(
+                                sender.display_name,
+                                aliases=[sender.username] if sender.username else None,
+                                telegram_user_id=sender.id,
+                            )
+                    else:
+                        if not holder:
+                            raise FinancialInputError(
+                                "نام صاحب حساب باید پیش از ثبت نهایی بررسی شود."
+                            )
+                        if not any(
+                            state.get(key)
+                            for key in (
+                                "destination_iban",
+                                "destination_card",
+                                "destination_account",
+                            )
+                        ):
+                            raise FinancialInputError(
+                                "حداقل یک شماره شبا، کارت یا حساب بررسی‌شده لازم است."
+                            )
+                        # Reviewed financial identity; never inferred from sender.
+                        counterparty = ledger.add_counterparty(holder)
                     requested_at = source.occurred_at
                     if requested_at.tzinfo is None:
                         requested_at = requested_at.replace(tzinfo=UTC)
@@ -984,11 +1198,30 @@ class FinancialWorkflowService:
                         source_message_id=source.id,
                         actor_user_id=user_id,
                         reason=reason,
+                        account_holder_name=holder or None,
+                        destination_account=state.get("destination_account"),
+                        destination_card=state.get("destination_card"),
+                        destination_iban=state.get("destination_iban"),
+                        destination_bank=state.get("destination_bank"),
+                        source_parser_candidate=state.get("source_parser_candidate"),
                     )
                     result = (
                         f"درخواست #{item.id} برای {counterparty.display_name} ثبت شد و به پیام اصلی پیوند دارد."
                     )
                 else:
+                    counterparty = session.scalar(
+                        select(Counterparty).where(
+                            Counterparty.group_id == group_id,
+                            Counterparty.telegram_user_id == sender.id,
+                            Counterparty.active.is_(True),
+                        )
+                    )
+                    if counterparty is None:
+                        counterparty = ledger.add_counterparty(
+                            sender.display_name,
+                            aliases=[sender.username] if sender.username else None,
+                            telegram_user_id=sender.id,
+                        )
                     item = ledger.create_promise(
                         counterparty_id=counterparty.id,
                         source_message_id=source.id,
@@ -1052,6 +1285,33 @@ class FinancialWorkflowService:
                     f"{party.display_name if party else 'شخص انتخاب‌شده'} تغییر یافت؛ "
                     "وضعیت تأیید سند تغییر نکرد."
                 )
+            elif operation == "payment_date_approve":
+                item = ledger.approve_payment_date(
+                    int(state["payment_id"]),
+                    reviewer_user_id=user_id,
+                    reason=reason,
+                )
+                result = (
+                    f"استثنای تاریخ رسید #{item.id} تأیید شد؛ این تصمیم فقط مانع تاریخ را برمی‌دارد "
+                    "و به معنی تأیید سند یا وصول بانکی نیست."
+                )
+            elif operation == "payment_date_reject":
+                item = ledger.reject_payment_date(
+                    int(state["payment_id"]),
+                    reviewer_user_id=user_id,
+                    reason=reason,
+                )
+                result = f"تاریخ رسید #{item.id} رد شد و مبلغ آن در جمع‌ها منظور نمی‌شود."
+            elif operation == "payment_date_correct":
+                item = ledger.correct_payment_date(
+                    int(state["payment_id"]),
+                    corrected_transaction_at=str(state["transaction_date"]),
+                    reviewer_user_id=user_id,
+                    reason=reason,
+                )
+                result = (
+                    f"تاریخ رسید #{item.id} اصلاح شد؛ تاریخ استخراج‌شده اولیه در سوابق حفظ شده است."
+                )
             elif operation == "payment_allocate":
                 money = Money(int(state["amount_value"]), CurrencyUnit(str(state["amount_unit"])))
                 if money.canonical_rial is None:
@@ -1102,6 +1362,9 @@ class FinancialWorkflowService:
             "allocation_confirm": "تأیید تخصیص",
             "allocation_cancel": "لغو تخصیص",
             "payment_settlement": "ثبت وصول مستقل",
+            "payment_date_approve": "تأیید استثنای تاریخ رسید",
+            "payment_date_reject": "رد تاریخ رسید",
+            "payment_date_correct": "اصلاح تاریخ رسید",
             "request_create": "ثبت درخواست پرداخت از پیام اصلی",
             "promise_create": "ثبت وعده پرداخت از پیام اصلی",
         }
@@ -1118,8 +1381,22 @@ class FinancialWorkflowService:
         if "amount_value" in state:
             money = Money(int(state["amount_value"]), CurrencyUnit(str(state["amount_unit"])))
             lines.append(f"مبلغ: {toman(money.canonical_rial)}")
+        if "transaction_date" in state:
+            lines.append(f"تاریخ اصلاح‌شده: {state['transaction_date']}")
         if "source_sender_name" in state:
-            lines.append(f"شخص مرتبط: {state['source_sender_name']}")
+            lines.append(f"فرستنده پیام (منبع): {state['source_sender_name']}")
+        if state.get("account_holder"):
+            lines.append(f"صاحب حساب/طرف درخواست: {state['account_holder']}")
+        identifier = next(
+            (
+                str(state[key])
+                for key in ("destination_iban", "destination_card", "destination_account")
+                if state.get(key)
+            ),
+            None,
+        )
+        if identifier:
+            lines.append(f"مشخصات حساب: {FinancialWorkflowService._masked(identifier)}")
         lines.append(f"دلیل: {state.get('reason', '')}")
         lines.append("این عملیات سوابق قبلی را حذف نمی‌کند.")
         return "\n".join(lines).translate(_PERSIAN_DIGITS)
@@ -1136,6 +1413,24 @@ class FinancialWorkflowService:
                         f"• درخواست #{item.request_id}: "
                         f"{source_link(group.telegram_chat_id, item.source.telegram_message_id)}"
                     )
+                request = session.scalar(
+                    select(PaymentRequest).where(
+                        PaymentRequest.id == item.request_id,
+                        PaymentRequest.group_id == group_id,
+                    )
+                )
+                if request is not None:
+                    lines.append(
+                        f"  صاحب حساب بررسی‌شده: {request.account_holder_name or 'ثبت نشده'}"
+                    )
+                    for label, value in (
+                        ("شبا", request.destination_iban),
+                        ("کارت", request.destination_card),
+                        ("حساب", request.destination_account),
+                        ("بانک", request.destination_bank),
+                    ):
+                        if value:
+                            lines.append(f"  {label}: {value}")
                 for payment_id in item.payment_ids:
                     payment = session.scalar(
                         select(Payment).where(

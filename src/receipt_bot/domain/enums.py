@@ -70,6 +70,16 @@ class PaymentEvidenceState(StrEnum):
     CONFIRMED = "confirmed"
 
 
+class PaymentDateState(StrEnum):
+    VALID = "valid"
+    NEEDS_REVIEW_OLD = "needs_review_old"
+    NEEDS_REVIEW_FUTURE = "needs_review_future"
+    NEEDS_REVIEW_UNKNOWN = "needs_review_unknown"
+    APPROVED_EXCEPTION = "approved_exception"
+    REJECTED = "rejected"
+    LEGACY_UNASSESSED = "legacy_unassessed"
+
+
 class SettlementState(StrEnum):
     NOT_CHECKED = "not_checked"
     EXTERNALLY_CONFIRMED = "externally_confirmed"

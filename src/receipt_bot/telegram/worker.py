@@ -125,6 +125,7 @@ class ReceiptJobWorker:
         max_extraction_attempts: int = 5,
         provider_cooldown_seconds: float = 60,
         delay_notification_seconds: int = 300,
+        receipt_max_age_days: int = 30,
         random_source: Callable[[], float] = random.random,
         clock: Callable[[], float] = monotonic,
     ) -> None:
@@ -144,6 +145,7 @@ class ReceiptJobWorker:
         self.max_download_attempts = max_download_attempts
         self.max_extraction_attempts = max_extraction_attempts
         self.delay_notification_seconds = delay_notification_seconds
+        self.receipt_max_age_days = receipt_max_age_days
         self.random_source = random_source
         self._prefer_text = False
         self.provider_cooldown = ProviderCooldown(
@@ -164,7 +166,11 @@ class ReceiptJobWorker:
         with self.database.session() as session:
             groups = list(session.scalars(select(TelegramGroup).order_by(TelegramGroup.id)))
             return sum(
-                LedgerService(session, group.id).materialize_unrecorded_extractions()
+                LedgerService(
+                    session,
+                    group.id,
+                    receipt_max_age_days=self.receipt_max_age_days,
+                ).materialize_unrecorded_extractions()
                 for group in groups
                 if self.access_policy.authorizes_group(group)
             )
@@ -447,7 +453,11 @@ class ReceiptJobWorker:
             attempt = ExtractionAttemptRepository(session, group_id).append_success(
                 evidence_id=evidence_id, outcome=outcome
             )
-            LedgerService(session, group_id).create_payment_from_evidence(evidence_id)
+            LedgerService(
+                session,
+                group_id,
+                receipt_max_age_days=self.receipt_max_age_days,
+            ).create_payment_from_evidence(evidence_id)
             job = ReceiptJobRepository(session, group_id).get(job_id)
             ReceiptJobRepository(session, group_id).complete(job)
             attempt_count = job.attempt_count
@@ -520,7 +530,11 @@ class ReceiptJobWorker:
             attempt = ExtractionAttemptRepository(session, group_id).append_success(
                 evidence_id=evidence_id, outcome=outcome
             )
-            LedgerService(session, group_id).create_payment_from_evidence(evidence_id)
+            LedgerService(
+                session,
+                group_id,
+                receipt_max_age_days=self.receipt_max_age_days,
+            ).create_payment_from_evidence(evidence_id)
             job = TextReceiptJobRepository(session, group_id).get(job_id)
             TextReceiptJobRepository(session, group_id).complete(job)
             attempt_count = job.attempt_count

@@ -3,8 +3,9 @@ from __future__ import annotations
 import re
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
 
@@ -27,9 +28,11 @@ class AppSettings(BaseSettings):
     retention_days: int = Field(default=183, ge=1, le=3650)
     timezone: Literal["Asia/Tehran"] = "Asia/Tehran"
     sensitive_debug: bool = False
-    extraction_provider: Literal["gemini", "openrouter"] = "gemini"
+    extraction_provider: Literal["gemini", "openrouter", "1xai"] = "gemini"
     gemini_models: str = "gemini-3.8-flash"
     openrouter_model: str | None = None
+    onexai_model: str | None = None
+    onexai_base_url: str = "https://1xai.ir/gemini/v1beta"
     telegram_bot_username: str | None = None
     telegram_poll_timeout_seconds: int = Field(default=30, ge=1, le=50)
     interaction_ttl_minutes: int = Field(default=15, ge=1, le=120)
@@ -42,11 +45,16 @@ class AppSettings(BaseSettings):
     receipt_retry_jitter_ratio: float = Field(default=0.20, ge=0, le=1)
     receipt_provider_cooldown_seconds: int = Field(default=60, ge=1, le=3600)
     receipt_delay_notification_seconds: int = Field(default=300, ge=30, le=86400)
+    receipt_max_age_days: int = Field(default=30, ge=0, le=3650)
     allowed_telegram_usernames: str
 
     telegram_bot_token: SecretStr | None = Field(default=None, validation_alias="TELEGRAM_BOT_TOKEN")
     gemini_api_key: SecretStr | None = Field(default=None, validation_alias="GEMINI_API_KEY")
     openrouter_api_key: SecretStr | None = Field(default=None, validation_alias="OPENROUTER_API_KEY")
+    onexai_api_key: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices("ONEXAI_API_KEY", "1xai_API_KEY"),
+    )
 
     @field_validator("allowed_telegram_usernames", mode="before")
     @classmethod
@@ -93,6 +101,32 @@ class AppSettings(BaseSettings):
         normalized = value.strip().removeprefix("@")
         if not normalized or not normalized.replace("_", "a").isalnum():
             raise ValueError("Telegram bot username is invalid")
+        return normalized
+
+    @field_validator("onexai_model")
+    @classmethod
+    def validate_onexai_model(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized or not re.fullmatch(r"[A-Za-z0-9._-]+", normalized):
+            raise ValueError("1xAi model ID is invalid")
+        return normalized
+
+    @field_validator("onexai_base_url")
+    @classmethod
+    def validate_onexai_base_url(cls, value: str) -> str:
+        normalized = value.strip().rstrip("/")
+        parsed = urlsplit(normalized)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("1xAi base URL must be an HTTPS URL without credentials or query data")
         return normalized
 
     @property

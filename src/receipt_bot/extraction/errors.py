@@ -47,6 +47,14 @@ class ProviderAuthenticationError(ProviderError):
     code = "provider_authentication"
 
 
+class ProviderAuthorizationError(ProviderError):
+    code = "provider_authorization"
+
+
+class ProviderPaymentRequiredError(ProviderError):
+    code = "provider_payment_required"
+
+
 class ProviderRateLimitError(ProviderError):
     code = "provider_rate_limit"
     retryable = True

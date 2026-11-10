@@ -28,6 +28,8 @@ from receipt_bot.telegram.financial import (
     FinancialWorkflowService,
     Period,
     parse_money_and_reason,
+    parse_date_and_reason,
+    parse_request_review_input,
     parse_reason,
     period_from_argument,
     split_telegram_text,
@@ -80,6 +82,7 @@ class TelegramUpdateHandler:
         access_policy: TelegramAccessPolicy,
         bot_username: str | None = None,
         interaction_ttl_minutes: int = 15,
+        receipt_max_age_days: int = 30,
         storage: ManagedStorage | None = None,
     ) -> None:
         self.database = database
@@ -91,7 +94,9 @@ class TelegramUpdateHandler:
         self.interactions = InteractionService(
             database, ttl_minutes=interaction_ttl_minutes
         )
-        self.financial = FinancialWorkflowService(database)
+        self.financial = FinancialWorkflowService(
+            database, receipt_max_age_days=receipt_max_age_days
+        )
         self.cleanup = ReceiptCleanupService(database, storage) if storage else None
 
     async def handle(self, update: dict[str, Any]) -> bool:
@@ -790,6 +795,33 @@ class TelegramUpdateHandler:
                 {"text": "ثبت وصول مستقل", "callback_data": callback(token, f"settlement_{payment_id}")},
             ],
         ]
+        date_state = self.financial.payment_date_state(group.id, payment_id)
+        if date_state in {
+            "needs_review_old",
+            "needs_review_future",
+            "needs_review_unknown",
+            "rejected",
+        }:
+            rows.extend(
+                [
+                    [
+                        {
+                            "text": "تأیید استثنای تاریخ",
+                            "callback_data": callback(token, f"dateapprove_{payment_id}"),
+                        },
+                        {
+                            "text": "رد تاریخ",
+                            "callback_data": callback(token, f"datereject_{payment_id}"),
+                        },
+                    ],
+                    [
+                        {
+                            "text": "اصلاح تاریخ",
+                            "callback_data": callback(token, f"datecorrect_{payment_id}"),
+                        }
+                    ],
+                ]
+            )
         if self.bot_username:
             handoff = self.interactions.create(
                 group_id=group.id,
@@ -820,6 +852,52 @@ class TelegramUpdateHandler:
             group_id=group.id,
             user_id=user.id,
         )
+        if (
+            operation == "request_create"
+            and not state.get("prefill_reviewed")
+            and not state.get("request_manual_legacy")
+        ):
+            interaction = self.interactions.create(
+                group_id=group.id,
+                user_id=user.id,
+                workflow="finance_action",
+                state={"phase": "review_prefill", "operation": operation, **state},
+            )
+            callback = self.interactions.callback_data
+            buttons: list[dict[str, str]] = []
+            if state.get("request_prefill_complete"):
+                buttons.append(
+                    {
+                        "text": "تأیید اطلاعات استخراج‌شده",
+                        "callback_data": callback(
+                            interaction.token, "request_prefill_confirm"
+                        ),
+                    }
+                )
+            buttons.append(
+                {
+                    "text": "اصلاح/تکمیل اطلاعات",
+                    "callback_data": callback(
+                        interaction.token, "request_prefill_correct"
+                    ),
+                }
+            )
+            await self.gateway.send_message(
+                chat_id,
+                self.financial.request_prefill_preview(state),
+                reply_markup={
+                    "inline_keyboard": [[item] for item in buttons]
+                    + [
+                        [
+                            {
+                                "text": "لغو",
+                                "callback_data": callback(interaction.token, "cancel"),
+                            }
+                        ]
+                    ]
+                },
+            )
+            return
         interaction = self.interactions.create(
             group_id=group.id,
             user_id=user.id,
@@ -832,7 +910,13 @@ class TelegramUpdateHandler:
             "request_create",
             "promise_create",
         }
-        prompt = (
+        if operation == "payment_date_correct":
+            prompt = (
+                "تاریخ صحیح و دلیل را با | جدا کنید؛ نمونه:\n"
+                "۱۴۰۵/۰۸/۱۳ ۱۰:۳۰ | اصلاح طبق مشاهده اصل رسید"
+            )
+        else:
+            prompt = (
             "مبلغ، واحد و دلیل را پاسخ دهید؛ نمونه:\n"
             "۶۰۰٬۰۰۰ تومان | اصلاح طبق بررسی حسابدار\n"
             "می‌توانید همین پیام را ریپلای کنید یا پاسخ را مستقیم به‌عنوان پیام بعدی بفرستید."
@@ -841,7 +925,7 @@ class TelegramUpdateHandler:
                 "دلیل این تصمیم را بنویسید. می‌توانید همین پیام را ریپلای کنید یا دلیل را "
                 "مستقیم به‌عنوان پیام بعدی بفرستید. اطلاعات کارت یا حساب را وارد نکنید."
             )
-        )
+            )
         sent = await self.gateway.send_message(
             chat_id,
             prompt,
@@ -886,10 +970,43 @@ class TelegramUpdateHandler:
             return True
         state = dict(interaction.state)
         try:
-            if state.get("operation") in {
+            if state.get("operation") == "request_create":
+                if state.get("request_manual_legacy"):
+                    money, reason = parse_money_and_reason(text)
+                    state.update(
+                        amount_value=money.value,
+                        amount_unit=money.unit.value,
+                        reason=reason,
+                    )
+                elif state.get("request_input_mode") == "confirm":
+                    state["reason"] = parse_reason(text)
+                else:
+                    try:
+                        state.update(parse_request_review_input(text))
+                    except FinancialInputError:
+                        has_identity = bool(state.get("account_holder")) and any(
+                            state.get(key)
+                            for key in (
+                                "destination_iban",
+                                "destination_card",
+                                "destination_account",
+                            )
+                        )
+                        if not has_identity:
+                            raise
+                        money, reason = parse_money_and_reason(text)
+                        state.update(
+                            amount_value=money.value,
+                            amount_unit=money.unit.value,
+                            reason=reason,
+                        )
+                state["prefill_reviewed"] = True
+            elif state.get("operation") == "payment_date_correct":
+                transaction_date, reason = parse_date_and_reason(text)
+                state.update(transaction_date=transaction_date, reason=reason)
+            elif state.get("operation") in {
                 "payment_correct",
                 "payment_allocate",
-                "request_create",
                 "promise_create",
             }:
                 money, reason = parse_money_and_reason(text)
@@ -1266,6 +1383,55 @@ class TelegramUpdateHandler:
             await self.gateway.send_message(chat_id, texts.CALLBACK_CANCELLED)
             return
         if interaction.workflow == "finance_action":
+            if action in {"request_prefill_confirm", "request_prefill_correct"}:
+                state = dict(interaction.state)
+                if (
+                    state.get("operation") != "request_create"
+                    or state.get("phase") != "review_prefill"
+                ):
+                    await self.gateway.send_message(chat_id, texts.CALLBACK_EXPIRED)
+                    return
+                if action == "request_prefill_confirm" and not state.get(
+                    "request_prefill_complete"
+                ):
+                    await self.gateway.send_message(
+                        chat_id, "⚠️ اطلاعات ناقص یا مبهم است و باید اصلاح شود."
+                    )
+                    return
+                state["phase"] = "input"
+                state["request_input_mode"] = (
+                    "confirm" if action == "request_prefill_confirm" else "correct"
+                )
+                if not self.interactions.update_state(
+                    token,
+                    user_id=user.id,
+                    group_id=group.id,
+                    state=state,
+                ):
+                    await self.gateway.send_message(chat_id, texts.CALLBACK_EXPIRED)
+                    return
+                prompt = (
+                    "دلیل ثبت این درخواست را بنویسید."
+                    if action == "request_prefill_confirm"
+                    else (
+                        "اطلاعات صحیح را در چهار بخش بنویسید:\n"
+                        "مبلغ واحد | نام صاحب حساب | شبا:...؛ کارت:...؛ حساب:...؛ بانک:... | دلیل\n"
+                        "حداقل یکی از شبا، کارت یا حساب لازم است."
+                    )
+                )
+                sent = await self.gateway.send_message(
+                    chat_id,
+                    prompt,
+                    reply_markup={"force_reply": True, "selective": True},
+                )
+                state["prompt_message_id"] = int(sent["message_id"])
+                self.interactions.update_state(
+                    token,
+                    user_id=user.id,
+                    group_id=group.id,
+                    state=state,
+                )
+                return
             if action != "apply":
                 await self.gateway.send_message(chat_id, texts.CALLBACK_UNKNOWN)
                 return
@@ -1363,6 +1529,9 @@ class TelegramUpdateHandler:
             ("reject_", "payment_reject"),
             ("correct_", "payment_correct"),
             ("settlement_", "payment_settlement"),
+            ("dateapprove_", "payment_date_approve"),
+            ("datereject_", "payment_date_reject"),
+            ("datecorrect_", "payment_date_correct"),
         ):
             if action.startswith(prefix):
                 try:

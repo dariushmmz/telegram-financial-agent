@@ -26,6 +26,7 @@ from receipt_bot.domain.enums import (
     ExtractionState,
     MembershipRole,
     PaymentEvidenceState,
+    PaymentDateState,
     PromiseState,
     RequestState,
     SettlementState,
@@ -166,6 +167,12 @@ class PaymentRequest(IdMixin, TimestampMixin, Base):
     state: Mapped[str] = mapped_column(String(32), nullable=False, default=RequestState.DRAFT.value)
     created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("telegram_users.id", ondelete="RESTRICT"))
     revision_number: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    account_holder_name: Mapped[str | None] = mapped_column(String(255))
+    destination_account: Mapped[str | None] = mapped_column(String(64))
+    destination_card: Mapped[str | None] = mapped_column(String(32))
+    destination_iban: Mapped[str | None] = mapped_column(String(34))
+    destination_bank: Mapped[str | None] = mapped_column(String(128))
+    source_parser_candidate: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 
     __table_args__ = (
         UniqueConstraint("id", "group_id", name="uq_request_id_group"),
@@ -408,6 +415,14 @@ class Payment(IdMixin, TimestampMixin, Base):
     amount_unit: Mapped[str] = mapped_column(String(16), nullable=False, default=CurrencyUnit.UNKNOWN.value)
     amount_rial: Mapped[int | None] = mapped_column(BigInteger)
     printed_transaction_at: Mapped[str | None] = mapped_column(String(128))
+    corrected_transaction_at: Mapped[str | None] = mapped_column(String(128))
+    parsed_transaction_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    transaction_calendar: Mapped[str | None] = mapped_column(String(16))
+    date_eligibility_state: Mapped[str] = mapped_column(
+        String(32), nullable=False, default=PaymentDateState.LEGACY_UNASSESSED.value
+    )
+    date_assessed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    date_max_age_days: Mapped[int | None] = mapped_column(Integer)
     transaction_reference: Mapped[str | None] = mapped_column(String(255))
     evidence_state: Mapped[str] = mapped_column(String(32), nullable=False, default=PaymentEvidenceState.NEEDS_REVIEW.value)
     settlement_state: Mapped[str] = mapped_column(String(32), nullable=False, default=SettlementState.NOT_CHECKED.value)
